@@ -6,7 +6,7 @@ let worker
 
 async function start() {
   const tesseract = await import(/* @vite-ignore */ TESSERACT)
-  const made = await (tesseract.default ?? tesseract).createWorker(['eng', 'deu'])
+  const made = await (tesseract.default ?? tesseract).createWorker(['eng', 'jpn'])
   // "Sparse text": words scattered over the page. The default layout analysis looks for
   // columns of prose and loses most of the text between staves.
   await made.setParameters({ tessedit_pageseg_mode: '11' })

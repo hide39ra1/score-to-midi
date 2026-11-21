@@ -6,6 +6,7 @@ import { Score, verovio } from './score.js'
 import { inspectScore } from './quality.js'
 import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments, routeParts } from './instruments.js'
 import { separateMidiTracks } from './midi.js'
+import { sourceTitle, safeFileName, unknownTitle } from './title.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
@@ -36,6 +37,7 @@ let score = null
 let selected = null // id of the selected note
 let midi = '' // base64, kept current for the MIDI download
 let started = 0 // when the current scan began
+let inputName = ''
 
 // For tests and the curious: the current score from the console.
 window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: null }
@@ -44,6 +46,7 @@ window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: nul
 
 async function scan(files) {
   if (!files.length || document.body.dataset.view === 'busy') return
+  inputName = files[0].name
   if (files.length === 1 && /\.(musicxml|xml)$/i.test(files[0].name)) {
     player.stop()
     pages.forEach(p => URL.revokeObjectURL(p.url)); pages = []
@@ -129,16 +132,25 @@ function readText() {
 
 async function open(xml, recognize = true) {
   player.stop()
+  unnamedFileName = unknownTitle()
   score = new Score(xml)
   selected = null
   progress('文字を読み込み中…', 1, 1)
   if (recognize) {
     const text = (await readText()).map(tokens)
     namePartsFromText(score.doc, text)
-    annotate(score.doc, text)
+    const result = annotate(score.doc, text)
+    // Engine placeholders and author guesses are not a verified title.
+    score.title = result.title || sourceTitle(inputName) || unknownTitle()
+    $('title-status').textContent = result.title ? '曲名を自動認識しました。保存名を確認・修正できます。' : sourceTitle(inputName) ? '曲名を読み取れなかったため、元ファイル名を使用しています。' : '曲名を読み取れませんでした。「曲名不明＋日時」で保存します。曲名欄で変更できます。'
   } else namePartsFromText(score.doc, [], { preservePiano: true })
+  if (!recognize) {
+    score.title = score.title.trim() || sourceTitle(inputName) || unknownTitle()
+    $('title-status').textContent = '保存名は曲名欄で確認・変更できます。'
+  }
   routeParts(score.doc)
   $('title').value = score.title
+  updateSaveName()
   $('scan').replaceChildren(...pages.map(scanPage))
   document.body.classList.toggle('no-scan', !pages.length)
   $('toggle-scan').disabled = !pages.length
@@ -155,7 +167,7 @@ function saveDraft() {
   } catch { $('save-status').textContent = 'ブラウザーに保存できません。MusicXMLを保存してください。' }
 }
 $('resume').onclick = async () => {
-  try { const xml = localStorage.getItem(DRAFT_KEY); if (xml) { pages = []; await open(xml, false) } } catch (e) { fail(e.message) }
+  try { const xml = localStorage.getItem(DRAFT_KEY); if (xml) { pages = []; inputName = ''; await open(xml, false) } } catch (e) { fail(e.message) }
 }
 
 function renderParts() {
@@ -304,7 +316,7 @@ $('inspector').onclick = (e) => {
 }
 $('undo').onclick = () => edit('undo')
 $('redo').onclick = () => edit('redo')
-$('title').onchange = (e) => { score.title = e.target.value; saveDraft() }
+$('title').oninput = (e) => { score.title = e.target.value; updateSaveName(); saveDraft() }
 
 function step(by) {
   const all = [...$('score').querySelectorAll('g.note, g.rest')]
@@ -369,7 +381,11 @@ function download(name, type, content) {
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 30_000) // revoking at once cancels the download in some browsers
 }
-const fileName = () => (score.title.trim() || 'score').replace(/[\\/:*?"<>|]+/g, '_')
+let unnamedFileName = unknownTitle()
+const fileName = () => safeFileName(score.title) || unnamedFileName
+function updateSaveName() {
+  $('save-name').textContent = `保存名: ${fileName()}.mid / ${fileName()}.musicxml`
+}
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', score.xml)
 $('save-midi').onclick = () => {
   try { download(`${fileName()}.mid`, 'audio/midi', separateMidiTracks(Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))) }

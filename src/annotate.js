@@ -4,6 +4,7 @@
 // the recogniser (the "staff-layout" field), note positions from the note ids.
 
 import { tempoMark } from './score.js'
+import { detectTitle } from './title.js'
 
 // A root, a quality built from the usual pieces only (so words like "Der" don't match), a bass.
 const CHORD = /^([A-G])([#b♯♭]?)((?:maj|min|dim|aug|sus|add|omit|no|m|M|\d|[#b♯♭+°ø△()\-,])*)(?:\/([A-G])([#b♯♭]?))?$/
@@ -155,13 +156,7 @@ export function annotate(doc, text) {
     if (!added.title) {
       // The largest text above the first staff is the title; text at the right, the composer.
       const head = all.filter((t) => t.y < staffs[0][1] - (staffs[0][3] - staffs[0][1]) && t.str.length > 1)
-      const largest = head.reduce((best, t) => (!best || t.h > best.h ? t : best), null)
-      // OCR gives a title word by word: take its whole line.
-      const title = largest && {
-        ...largest,
-        str: head.filter((t) => Math.abs(t.y - largest.y) < 0.5 * largest.h && t.h > 0.7 * largest.h)
-          .sort((a, b) => a.x - b.x).map((t) => t.str).join(' '),
-      }
+      const title = detectTitle(all, staffs[0])
       if (title && page === Math.min(...layout.map((s, i) => (s.length ? i : Infinity)))) {
         added.title = title.str
         const composer = head.filter((t) => t.h < 0.7 * title.h && t.x + t.w / 2 > (staffs[0][0] + staffs[0][2]) / 2)
