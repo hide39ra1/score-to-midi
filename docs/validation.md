@@ -96,3 +96,5 @@ Verovioが大きいバンドルを生成すること、実行環境に応じたn
 - homrがモルデントをarticulationsへ置く問題を、Python出力・既存MusicXMLの読み込みでornamentsへ移すよう修正。Python関数単独の検証成功。
 - 編集した検証譜はMusicXML 4.0の公式XSDに適合。MuseScore Studio 4.7.7へ読み込み成功し、Fermata1、Ornament1、Dynamic1、HairPin1、StaffText1を確認。
 - 31件の自動テストと本番ビルド成功。実スコアの全記号・全ページの正解率は未測定。新たな独立画像照合はスタッカートの点形状に限定され、他記号は既存OMR・文字補完・手動修正を使用する。
+
+追加確認: 休符へのフェルマータ追加と、調号変更時の既存8vb音部記号の保持をブラウザー保存後のXMLで確認。31件のテストとビルドを再実行して成功。

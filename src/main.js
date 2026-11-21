@@ -390,6 +390,7 @@ $('span-end').onclick=async()=>{
 }
 async function symbolChange(change){if(!score||!selected)return;player.stop();if(change())await draw()}
 $('mark-toggle').onclick=()=>symbolChange(()=>score.mark(selected,$('mark-type').value))
+$('mark-type').onchange=()=>{$('mark-toggle').disabled=!score?.note(selected)?.querySelector($('mark-type').value==='fermata'?'pitch,unpitched,rest':'pitch,unpitched')}
 $('dynamic-add').onclick=()=>symbolChange(()=>score.direction(selected,'dynamic',$('dynamic-type').value))
 $('direction-add').onclick=()=>symbolChange(()=>score.direction(selected,'words',$('direction-text').value.trim()))
 $('attributes-apply').onclick=()=>{
@@ -398,7 +399,7 @@ $('attributes-apply').onclick=()=>{
 }
 function selectedSymbols() {
   const note=score?.note(selected),pitched=!!note?.querySelector('pitch,unpitched')
-  $('mark-toggle').disabled=!pitched
+  $('mark-toggle').disabled=!note?.querySelector($('mark-type').value==='fermata'?'pitch,unpitched,rest':'pitch,unpitched')
   $('dynamic-add').disabled=$('direction-add').disabled=!note
   $('attributes-apply').disabled=!note
   $('span-start').disabled=!pitched;$('span-end').disabled=!pitched||!spanStart

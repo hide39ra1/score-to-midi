@@ -19,7 +19,7 @@ export function normalizeSymbolStructure(doc) {
   }
 }
 export function toggleMark(note,tag) {
-  if(!MARKS[tag]||!note.querySelector('pitch,unpitched')) return false
+  if(!MARKS[tag]||!note.querySelector(tag==='fermata'?'pitch,unpitched,rest':'pitch,unpitched')) return false
   const container=notation(note),existing=container.querySelector(tag)
   if(existing){const parent=existing.parentNode;existing.remove();if(parent!==container&&!parent.children.length)parent.remove();return true}
   let parent=container
@@ -34,13 +34,13 @@ export function parseMeter(beats,beatType) {
   return values.every(n=>n>0&&n<=32)&&[1,2,4,8,16,32,64].includes(den)?{beats:String(beats),beatType:den}:null
 }
 export function attributeContext(note) {
-  const result={clef:'G2',fifths:0,beats:'4',beatType:4},staff=note.querySelector('staff')?.textContent||'1'
+  const result={clef:'G2',clefOctave:0,fifths:0,beats:'4',beatType:4},staff=note.querySelector('staff')?.textContent||'1'
   for(const measure of note.closest('part').querySelectorAll(':scope > measure')) {
     for(const attr of measure.querySelectorAll(':scope > attributes'))for(const el of attr.children) {
       if(el.hasAttribute('number')&&el.getAttribute('number')!==staff)continue
       if(el.tagName==='key')result.fifths=Number(el.querySelector('fifths')?.textContent||0)
       if(el.tagName==='time'){result.beats=el.querySelector('beats')?.textContent||result.beats;result.beatType=Number(el.querySelector('beat-type')?.textContent||result.beatType)}
-      if(el.tagName==='clef')result.clef=(el.querySelector('sign')?.textContent||'G')+(el.querySelector('line')?.textContent||'')
+      if(el.tagName==='clef'){result.clef=(el.querySelector('sign')?.textContent||'G')+(el.querySelector('line')?.textContent||'');result.clefOctave=Number(el.querySelector('clef-octave-change')?.textContent||0)}
     }
     if(measure===note.closest('measure'))break
   }
@@ -48,6 +48,7 @@ export function attributeContext(note) {
 }
 export function setAttributes(note,{clef,fifths,beats,beatType}) {
   const meter=parseMeter(beats,beatType),key=Number(fifths)
+  const previous=attributeContext(note)
   if(!meter||!Number.isInteger(key)||Math.abs(key)>7||!['G2','F4','C3','C4','percussion'].includes(clef))return false
   const doc=note.ownerDocument,measure=note.closest('measure'),staff=note.querySelector('staff')?.textContent||'1'
   const multi=Number(note.closest('part').querySelector('staves')?.textContent||1)>1
@@ -58,7 +59,7 @@ export function setAttributes(note,{clef,fifths,beats,beatType}) {
     const el=make(doc,tag);if(staff!=='1'||Number(note.closest('part').querySelector('staves')?.textContent||1)>1)el.setAttribute('number',staff)
     if(tag==='key')el.append(make(doc,'fifths',key))
     if(tag==='time')el.append(make(doc,'beats',meter.beats),make(doc,'beat-type',meter.beatType))
-    if(tag==='clef'){el.append(make(doc,'sign',clef==='percussion'?'percussion':clef[0]));if(clef!=='percussion')el.append(make(doc,'line',clef[1]))}
+    if(tag==='clef'){el.append(make(doc,'sign',clef==='percussion'?'percussion':clef[0]));if(clef!=='percussion')el.append(make(doc,'line',clef[1]));if(clef===previous.clef&&previous.clefOctave)el.append(make(doc,'clef-octave-change',previous.clefOctave))}
     attr.append(el)
   }
   const order=['footnote','level','divisions','key','time','staves','part-symbol','instruments','clef','staff-details','transpose','for-part','directive','measure-style']
