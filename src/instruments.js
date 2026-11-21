@@ -116,10 +116,8 @@ export function namePartsFromText(doc, text, { preservePiano = false } = {}) {
     if (label) {
       set(doc, meta, 'part-name', label); candidates.set(meta.id, label)
       const guessed = identifyInstruments(label)
-      if (guessed.length === 1) {
-        const current = partSettings(doc).find(p => p.id === meta.id)
-        applyPartSettings(doc, meta.id, { name: label, program: INSTRUMENTS.find(x => x[0] === guessed[0])[2], transpose: current.transpose })
-      }
+      const current = partSettings(doc).find(p => p.id === meta.id)
+      applyPartSettings(doc, meta.id, { name: label, program: guessed.length === 1 ? INSTRUMENTS.find(x => x[0] === guessed[0])[2] : 1, transpose: current.transpose })
     }
     else if ((preservePiano ? /^voice$/i : /^(voice|piano)$/i).test(meta.querySelector('part-name')?.textContent?.trim() || '')) {
       const current = partSettings(doc).find(p => p.id === meta.id)
