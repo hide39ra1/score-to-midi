@@ -13,7 +13,8 @@ async function finish(canvas, text = []) {
 }
 
 async function* pdfPages(file, range) {
-  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise
+  const task = pdfjs.getDocument({ data: await file.arrayBuffer() })
+  const pdf = await task.promise
   try {
   if (range.from > pdf.numPages) throw new Error(`開始ページが総ページ数（${pdf.numPages}）を超えています。`)
   for (let n = range.from; n <= Math.min(range.to, pdf.numPages); n++) {
@@ -35,7 +36,7 @@ async function* pdfPages(file, range) {
     yield finish(canvas, text)
     page.cleanup()
   }
-  } finally { await pdf.destroy() }
+  } finally { await task.destroy() }
 }
 
 async function imagePage(file) {
