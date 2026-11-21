@@ -1,4 +1,5 @@
 // GM programs are MusicXML's 1-based values. Transposition is sounding minus written pitch.
+import { melodicRoute } from './midi.js'
 export const INSTRUMENTS = [
   ['unset','未設定',1,0], ['flute','フルート',74,0], ['piccolo','ピッコロ',73,12],
   ['oboe','オーボエ',69,0], ['clarinet','B♭クラリネット',72,-2], ['bassclarinet','B♭バスクラリネット',72,-14],
@@ -44,6 +45,19 @@ export function partSettings(doc) {
       program: Number(meta.querySelector('midi-program')?.textContent || 1),
       transpose: Number(shift?.querySelector('chromatic')?.textContent || 0) + 12 * Number(shift?.querySelector('octave-change')?.textContent || 0) }
   })
+}
+
+export function routeParts(doc) {
+  for (const [index,meta] of [...doc.querySelectorAll('part-list > score-part')].entries()) {
+    const midi = meta.querySelector('midi-instrument')
+    if (!midi) continue
+    const route = melodicRoute(index)
+    meta.querySelectorAll('midi-device').forEach(el => el.remove())
+    const device = doc.createElement('midi-device'); device.setAttribute('port',route.port+1); device.id = midi.id
+    meta.insertBefore(device,midi)
+    const channel = set(doc,midi,'midi-channel',route.channel+1)
+    midi.insertBefore(channel,midi.firstChild)
+  }
 }
 
 export function applyPartSettings(doc, id, {name, program, transpose}) {

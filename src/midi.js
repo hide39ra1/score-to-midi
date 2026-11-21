@@ -1,5 +1,9 @@
 // Give every sounding track its own channel; use MIDI Port metadata beyond 15
 // melodic tracks. Channel 10 is reserved for percussion and is not auto-assigned.
+export function melodicRoute(index) {
+  const slot = index % 15
+  return { port: Math.floor(index/15), channel: slot >= 9 ? slot+1 : slot }
+}
 export function separateMidiTracks(bytes) {
   const u32 = (at) => new DataView(bytes.buffer, bytes.byteOffset + at, 4).getUint32(0)
   const text = at => String.fromCharCode(...bytes.slice(at, at+4))
@@ -33,7 +37,7 @@ export function separateMidiTracks(bytes) {
     const channelEvents = events.filter(e => e.status < 240)
     const output = []
     if (channelEvents.length) {
-      const port = Math.floor(sounding/15), slot = sounding++ % 15, channel = slot >= 9 ? slot+1 : slot
+      const {port,channel} = melodicRoute(sounding++)
       if (port > 127) throw new Error('MIDIパート数が多すぎます。')
       output.push(0,255,33,1,port)
       const old = channelEvents[0].status & 15

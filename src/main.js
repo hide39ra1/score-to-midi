@@ -4,7 +4,7 @@ import { ocr } from './ocr.js'
 import { Player } from './player.js'
 import { Score, verovio } from './score.js'
 import { inspectScore } from './quality.js'
-import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments } from './instruments.js'
+import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments, routeParts } from './instruments.js'
 import { separateMidiTracks } from './midi.js'
 
 const $ = (id) => document.getElementById(id)
@@ -137,6 +137,7 @@ async function open(xml, recognize = true) {
     namePartsFromText(score.doc, text)
     annotate(score.doc, text)
   } else namePartsFromText(score.doc, [], { preservePiano: true })
+  routeParts(score.doc)
   $('title').value = score.title
   $('scan').replaceChildren(...pages.map(scanPage))
   document.body.classList.toggle('no-scan', !pages.length)
