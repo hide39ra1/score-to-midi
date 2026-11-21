@@ -33,7 +33,9 @@ async function* pdfPages(file, range) {
         const t = pdfjs.Util.transform(viewport.transform, item.transform)
         return { str: item.str, x: t[4], y: t[5], h: Math.hypot(t[2], t[3]), w: item.width * viewport.scale }
       })
-    yield finish(canvas, text)
+    const result = await finish(canvas, text)
+    result.sourcePage = n
+    yield result
     page.cleanup()
   }
   } finally { await task.destroy() }
@@ -53,8 +55,8 @@ export async function loadPages(files, onProgress = () => {}, range = { from: 1,
   const pages = []
   for (const file of files) {
     const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
-    if (isPdf) for await (const page of pdfPages(file, range)) onProgress(pages.push(page))
-    else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(file.name)) onProgress(pages.push(await imagePage(file)))
+    if (isPdf) for await (const page of pdfPages(file, range)) { page.sourceFile=file.name;onProgress(pages.push(page)) }
+    else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(file.name)) {const page=await imagePage(file);page.sourceFile=file.name;page.sourcePage=1;onProgress(pages.push(page))}
     else throw new Error('PDFまたは画像ファイルを選んでください。')
   }
   return pages

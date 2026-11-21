@@ -5,6 +5,7 @@
 
 import { tempoMark } from './score.js'
 import { detectTitle } from './title.js'
+import {staffLayout} from './geometry-report.js'
 
 // A root, a quality built from the usual pieces only (so words like "Der" don't match), a bass.
 const CHORD = /^([A-G])([#b♯♭]?)((?:maj|min|dim|aug|sus|add|omit|no|m|M|\d|[#b♯♭+°ø△()\-,])*)(?:\/([A-G])([#b♯♭]?))?$/
@@ -111,8 +112,7 @@ const place = (id) => {
  * `text[p]` is the token list of page p.
  */
 export function annotate(doc, text) {
-  const field = doc.querySelector('miscellaneous-field[name="staff-layout"]')
-  const layout = JSON.parse(field?.textContent ?? '[]')
+  const layout = staffLayout(doc)
   // Keep original staff positions for instrument association, result reopening,
   // and unread-page diagnostics stored in the same metadata container.
   const added = { title: '', lyrics: 0, chords: 0, tempo: 0 }

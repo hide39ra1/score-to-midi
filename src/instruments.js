@@ -1,5 +1,6 @@
 // GM programs are MusicXML's 1-based values. Transposition is sounding minus written pitch.
 import { melodicRoute } from './midi.js'
+import {staffLayout} from './geometry-report.js'
 export const INSTRUMENTS = [
   ['unset','未設定',1,0], ['flute','フルート',74,0], ['piccolo','ピッコロ',73,12],
   ['oboe','オーボエ',69,0], ['clarinet','B♭クラリネット',72,-2], ['bassclarinet','B♭バスクラリネット',72,-14],
@@ -91,8 +92,7 @@ export function applyPartSettings(doc, id, {name, program, transpose}) {
 
 // Associate OCR labels by the first note's original position, never by the current row index.
 export function namePartsFromText(doc, text, { preservePiano = false } = {}) {
-  let layout = []
-  try { layout = JSON.parse(doc.querySelector('miscellaneous-field[name="staff-layout"]')?.textContent || '[]') } catch {}
+  const layout = staffLayout(doc)
   const candidates = new Map()
   for (const [index, meta] of [...doc.querySelectorAll('part-list > score-part')].entries()) {
     const part = [...doc.querySelectorAll('score-partwise > part')].find(p => p.id === meta.id)

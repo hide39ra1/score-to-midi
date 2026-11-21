@@ -7,11 +7,26 @@ import { inspectScore } from './quality.js'
 import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments, routeParts } from './instruments.js'
 import { separateMidiTracks } from './midi.js'
 import { sourceTitle, safeFileName, unknownTitle } from './title.js'
+import {storeGeometry,inspectGeometry} from './geometry-report.js'
+import {staffY} from './structure.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
 const query = new URLSearchParams(location.search)
 const worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
+const geometryWorker = new Worker(new URL('./structure.worker.js', import.meta.url), {type:'module'})
+let geometryRequest=0
+const geometryRequests=new Map()
+geometryWorker.onmessage=({data})=>{const request=geometryRequests.get(data.id);geometryRequests.delete(data.id);if(data.error) request?.reject(new Error(data.error));else request?.resolve(data.result)}
+geometryWorker.onerror=(error)=>{for(const request of geometryRequests.values()) request.reject(new Error(error.message||'構造解析ワーカーを起動できません'));geometryRequests.clear()}
+async function ensureGeometry() {
+  for(const [index,page] of pages.entries()) {
+    if(page.structure) continue
+    progress(`五線・小節線を解析中… ${index+1}/${pages.length}`)
+    try {page.structure=await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,png:page.png,fullScore:$('layout').value==='full-score'})});page.structure.sourcePage=page.sourcePage||index+1;page.structure.sourceFile=page.sourceFile||''}
+    catch(error) {page.structure={version:1,width:page.width,height:page.height,staves:[],error:error.message}}
+  }
+}
 // Browsers without WebAssembly JSPI (Safari before 27) need the networks in a worker of
 // their own, see omr.worker.js. ?nojspi forces that way, to test it in other browsers.
 let bridgePort = null
@@ -38,6 +53,7 @@ let selected = null // id of the selected note
 let midi = '' // base64, kept current for the MIDI download
 let started = 0 // when the current scan began
 let inputName = ''
+let geometryReport=null
 
 // For tests and the curious: the current score from the console.
 window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: null }
@@ -69,6 +85,7 @@ async function scan(files) {
     return fail(`ファイルを読み込めませんでした: ${e.message}`)
   }
   $('thumbs').replaceChildren(...pages.map((p) => Object.assign(new Image(), { src: p.url })))
+  await ensureGeometry()
   readText() // OCR runs beside the recognition
   // Copies go to the worker; the originals stay here for the side-by-side view.
   started = performance.now()
@@ -134,6 +151,8 @@ async function open(xml, recognize = true) {
   player.stop()
   unnamedFileName = unknownTitle()
   score = new Score(xml)
+  await ensureGeometry()
+  if(pages.length) storeGeometry(score.doc,pages.map(page=>page.structure))
   selected = null
   progress('文字を読み込み中…', 1, 1)
   if (recognize) {
@@ -211,6 +230,9 @@ function scanPage(page, index) {
   const div = document.createElement('div')
   div.className = 'page'
   div.append(Object.assign(new Image(), { src: page.url }))
+  const overlay=document.createElementNS('http://www.w3.org/2000/svg','svg')
+  overlay.setAttribute('viewBox',`0 0 ${page.width} ${page.height}`);overlay.setAttribute('aria-hidden','true');overlay.classList.add('structure-overlay')
+  div.append(overlay)
   div.onclick = (e) => {
     // Select the note which was read closest to the click.
     const box = div.getBoundingClientRect()
@@ -241,6 +263,7 @@ async function draw() {
   $('quality').textContent = `${report.parts}パート・${report.notes}音符。` + (report.warnings.length ? `拍数・小節数の確認候補 ${report.warnings.length}件: ${report.warnings.slice(0, 8).join('、')}。弱起・カデンツァなど正しい例外も含まれます。` : '拍数の不一致は検出されませんでした。音高・移調・声部は原稿と照合してください。')
   const unread = score.doc.querySelector('miscellaneous-field[name="unread-pages"]')?.textContent
   if (unread) $('quality').textContent += ` 認識できなかったページ（選択範囲内の順番）: ${unread}。出力には含まれていません。`
+  drawGeometry()
   const pane = $('score')
   const scroll = pane.scrollTop
   const svgs = await score.render(Math.max(pane.clientWidth - 28, 320))
@@ -255,6 +278,40 @@ async function draw() {
   $('redo').disabled = !score.undone.length
   saveDraft()
 }
+
+function drawGeometry() {
+  geometryReport=inspectGeometry(score.doc)
+  if(geometryReport.warnings.length) $('quality').textContent+=` 五線・小節の構造照合で${geometryReport.warnings.length}件の確認候補があります。`
+  const structures=geometryReport.structures
+  const staffCount=structures.reduce((n,p)=>n+(p?.staves?.length||0),0)
+  const barCount=structures.reduce((n,p)=>n+(p?.staves||[]).reduce((sum,s)=>sum+s.bars.filter(b=>b.accepted).length,0),0)
+  const failed=structures.filter(p=>p?.error).length
+  $('geometry-summary').textContent=staffCount?`画像から${staffCount}組の五線・${barCount}本の小節線候補を検出。${geometryReport.symbols.length}個の音符・休符の座標を照合しました。`:'五線を検出できませんでした。原稿のない編集再開時は、保存された解析情報だけを表示します。'
+  if(failed) $('geometry-summary').textContent+=` ${failed}ページで構造解析に失敗しています。`
+  $('geometry-warnings').replaceChildren(...geometryReport.warnings.map(w=>{const li=document.createElement('li');li.textContent=w.message;return li}))
+  $('toggle-structure').disabled=!pages.length||!staffCount
+  $('save-analysis').disabled=!staffCount
+  const svgNS='http://www.w3.org/2000/svg'
+  pages.forEach((page,index)=>{
+    const overlay=$('scan').children[index]?.querySelector('.structure-overlay')
+    if(!overlay) return
+    const children=[]
+    const shape=(tag,attributes,title)=>{const el=document.createElementNS(svgNS,tag);for(const [key,value] of Object.entries(attributes)) el.setAttribute(key,value);if(title){const text=document.createElementNS(svgNS,'title');text.textContent=title;el.append(text)}children.push(el)}
+    for(const staff of structures[index]?.staves||[]) {
+      for(const points of staff.lines) shape('polyline',{points:points.map(p=>p.join(',')).join(' '),class:'staff-trace'},`五線 ${staff.id}`)
+      for(const x of [staff.left,staff.right]) for(const line of [0,4]) shape('circle',{cx:x,cy:staffY(staff,x,line),r:staff.spacing*.3,class:'staff-corner'})
+      for(const bar of staff.bars) shape('line',{x1:bar.x,x2:bar.x,y1:bar.top,y2:bar.bottom,class:bar.accepted?'bar-trace':'bar-candidate'},`小節線候補：${bar.type}／支持五線${bar.support}`)
+      for(const x of staff.inferredBars||[]) shape('line',{x1:x,x2:x,y1:staffY(staff,x,0),y2:staffY(staff,x,4),class:'bar-inferred'},'他パートとの一致から補った境界候補')
+    }
+    const wrong=new Set(geometryReport.warnings.flatMap(w=>w.ids||[]))
+    for(const symbol of geometryReport.symbols.filter(s=>s.page===index)) {
+      const staff=structures[index]?.staves.find(s=>s.id===symbol.staff),radius=(staff?.spacing||8)*.7
+      shape('circle',{cx:symbol.x,cy:symbol.y,r:radius,class:wrong.has(symbol.id)?'symbol-mismatch':symbol.kind==='rest'?'rest-anchor':'note-anchor'},`${symbol.kind==='rest'?'休符':'音符'} ${symbol.type||''}／五線${symbol.staff??'?'} 小節${symbol.measure??'?'} (${symbol.x},${symbol.y})`)
+    }
+    overlay.replaceChildren(...children)
+  })
+}
+$('toggle-structure').onclick=()=>{const visible=document.body.classList.toggle('show-structure');$('toggle-structure').setAttribute('aria-pressed',String(visible))}
 
 function select(id, reveal = false) {
   const pane = $('score')
@@ -387,6 +444,7 @@ function updateSaveName() {
   $('save-name').textContent = `保存名: ${fileName()}.mid / ${fileName()}.musicxml`
 }
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', score.xml)
+$('save-analysis').onclick=()=>download(`${fileName()}_解析.json`,'application/json',JSON.stringify(geometryReport,null,2))
 $('save-midi').onclick = () => {
   try { download(`${fileName()}.mid`, 'audio/midi', separateMidiTracks(Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))) }
   catch (e) { $('save-status').textContent = `MIDIを保存できませんでした: ${e.message}`; $('parts-panel').open = true }
