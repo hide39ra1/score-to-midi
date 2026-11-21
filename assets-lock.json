@@ -1,0 +1,9 @@
+{
+  "source": "https://dsalex1.github.io/sheetscan/",
+  "files": {
+    "homr.zip": "c757efc2872b19adcb197c88c05c4a003e6102c17a680996ee84f0eb4091a4ec",
+    "models/segnet.onnx": "6ed36640db4ef5d223098b6d5efe4eda97c66b24a2c72faab8a018c749003a8d",
+    "models/encoder.onnx": "ee5767286c60dc3d567fe72b6560e7285261ede1535b4215153c199ab3057559",
+    "models/decoder.onnx": "99a6ac39770616bc1a20d6c409bb85fbbe21ba47f972984f9ef834fb5741b96f"
+  }
+}

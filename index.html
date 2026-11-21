@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Turn scanned sheet music (PDF or photos) into editable MusicXML and MIDI, right in your browser." />
+    <title>Score to MIDI | スコア読み取り機</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎼</text></svg>" />
+    <!-- Shared memory (threads, and the whole recogniser on Safari before 27) needs a
+         cross-origin isolated page; a static host sends no such headers, so a service
+         worker adds them. Its default "credentialless" mode leaves WebKit's workers
+         without shared memory: ask for require-corp. -->
+    <script>window.coi = { coepCredentialless: () => false }</script>
+    <script src="coi-serviceworker.min.js"></script>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body data-view="start">
+    <header>
+      <a class="brand" href="./">Score to MIDI</a>
+      <div class="tools">
+        <button id="play" title="Play / stop (Space)">▶ 再生</button>
+        <label class="tempo" title="Tempo in quarter notes per minute. Read from the page if it states one; change it to play slower or faster.">♩ = <input id="bpm" type="number" min="20" max="400" step="1" inputmode="numeric" /></label>
+        <span class="gap"></span>
+        <button id="undo" title="Undo (Ctrl+Z)">元に戻す</button>
+        <button id="redo" title="Redo (Ctrl+Y)">やり直す</button>
+        <span class="gap"></span>
+        <input id="title" type="text" placeholder="曲名" aria-label="曲名" />
+        <span class="grow"></span>
+        <button id="toggle-scan" title="Show or hide the original pages">原稿の表示</button>
+        <button id="save-xml" class="primary" title="For Finale, Sibelius, capella, MuseScore, Dorico…">MusicXML保存</button>
+        <button id="save-midi">MIDI保存</button>
+        <button id="again">別の譜面</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="start">
+        <label id="drop">
+          <input id="files" type="file" accept="application/pdf,image/*" multiple hidden />
+          <strong>PDFの譜面をMIDIへ</strong>
+          <span>PDF・スキャン画像を選択、またはここにドロップ</span>
+        </label>
+        <button id="sample">サンプルで試す（バッハのコラール）</button>
+        <h1 class="intro">譜面を読み取り、聴いて確かめる。</h1>
+        <p class="notes">PDFを画像化し、音符を認識して編集できる楽譜に変換します。原稿と照合・修正してからMIDIを保存してください。<br />処理は端末内で行い、譜面はサーバーに送信しません。初回はモデル約150 MBと実行環境をダウンロードします。</p>
+        <div class="range"><label>開始ページ <input id="page-from" type="number" min="1" value="1" /></label><label>終了ページ <input id="page-to" type="number" min="1" placeholder="最後" /></label></div>
+        <p class="notes">初回は1ページだけでお試しください。打楽器・移調楽器・複雑な連符や声部は、認識結果の確認が必要です。</p>
+        <p id="unsupported" role="alert" class="error" hidden></p>
+        <p class="notes credits">開発初期版 · <a href="https://github.com/hide39ra1/score-to-midi">ソースコード・使い方（AGPL-3.0）</a><br />認識: homr / Sheetscan · 楽譜描画: Verovio · PDF: PDF.js</p>
+      </section>
+
+      <section id="busy">
+        <div class="progress"><div id="bar"></div></div>
+        <p id="status" role="status" aria-live="polite">準備中…</p>
+        <p id="detail"></p>
+        <div id="thumbs"></div><button id="cancel">中止して戻る</button>
+      </section>
+
+      <section id="work">
+        <p id="quality" role="status" aria-live="polite"></p>
+        <div id="scan" aria-label="原稿"></div>
+        <div id="score" aria-label="認識した楽譜" tabindex="0"></div>
+      </section>
+    </main>
+
+    <footer id="inspector">
+      <span class="group" title="Pitch (↑ ↓, with Shift an octave)">
+        <button data-do="move" data-arg="1">↑</button><button data-do="move" data-arg="-1">↓</button>
+        <button data-do="move" data-arg="7">8va ↑</button><button data-do="move" data-arg="-7">8va ↓</button>
+      </span>
+      <span class="group" title="Accidental (+, -, N)">
+        <button data-do="alter" data-arg="1">♯</button><button data-do="alter" data-arg="-1">♭</button><button data-do="alter" data-arg="0">♮</button>
+      </span>
+      <span class="group" title="Note value (1–6, . for a dot)">
+        <button data-do="duration" data-arg="0">1</button><button data-do="duration" data-arg="1">½</button>
+        <button data-do="duration" data-arg="2">¼</button><button data-do="duration" data-arg="3">⅛</button>
+        <button data-do="duration" data-arg="4">1⁄16</button><button data-do="duration" data-arg="5">1⁄32</button>
+        <button data-do="dot">付点</button>
+      </span>
+      <span class="group">
+        <button data-do="rest" title="Note ↔ rest (R)">音符／休符</button>
+        <button data-do="add" title="Add a note to the chord (A)">和音に追加</button>
+        <button data-do="remove" title="Delete (Del)">削除</button>
+      </span>
+      <span id="hint">音符をクリックして修正。左右キーで音符を移動。</span>
+    </footer>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

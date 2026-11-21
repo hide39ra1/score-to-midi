@@ -1,0 +1,9 @@
+node_modules/
+dist/
+tmp/
+test-results/
+public/models/
+public/homr.zip
+*.pdf
+*.mid
+__pycache__/

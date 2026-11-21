@@ -1,0 +1,329 @@
+import { annotate, tokens } from './annotate.js'
+import { loadPages } from './input.js'
+import { ocr } from './ocr.js'
+import { Player } from './player.js'
+import { Score, verovio } from './score.js'
+import { inspectScore } from './quality.js'
+
+const $ = (id) => document.getElementById(id)
+const show = (view) => (document.body.dataset.view = view)
+const query = new URLSearchParams(location.search)
+const worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
+// Browsers without WebAssembly JSPI (Safari before 27) need the networks in a worker of
+// their own, see omr.worker.js. ?nojspi forces that way, to test it in other browsers.
+let bridgePort = null
+if (typeof WebAssembly.Suspending !== 'function' || query.has('nojspi')) {
+  const channel = new MessageChannel()
+  new Worker(new URL('./ort.worker.js', import.meta.url), { type: 'module' }).postMessage({ port: channel.port1 }, [channel.port1])
+  bridgePort = channel.port2
+}
+const player = new Player()
+
+let pages = [] // the scanned pages: {png, url, width, height, text}
+let score = null
+let selected = null // id of the selected note
+let midi = '' // base64, kept current for the MIDI download
+let started = 0 // when the current scan began
+
+// For tests and the curious: the current score from the console.
+window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: null }
+
+// ---------- scanning ----------
+
+async function scan(files) {
+  if (!files.length || document.body.dataset.view === 'busy') return
+  const from = Number($('page-from').value)
+  const to = $('page-to').value ? Number($('page-to').value) : Infinity
+  if (!Number.isInteger(from) || from < 1 || to < from || (to !== Infinity && !Number.isInteger(to))) return fail('ページ範囲を正しく指定してください。')
+  $('unsupported').hidden = true
+  $('detail').textContent = ''
+  pages.forEach((p) => URL.revokeObjectURL(p.url))
+  pages = []
+  show('busy')
+  progress('ページを準備しています…')
+  $('thumbs').replaceChildren()
+  try {
+    pages = await loadPages(files, (n) => progress(`${n}ページを準備しています…`), { from, to })
+  } catch (e) {
+    return fail(`ファイルを読み込めませんでした: ${e.message}`)
+  }
+  $('thumbs').replaceChildren(...pages.map((p) => Object.assign(new Image(), { src: p.url })))
+  readText() // OCR runs beside the recognition
+  // Copies go to the worker; the originals stay here for the side-by-side view.
+  started = performance.now()
+  worker.postMessage({ pages: pages.map((p) => p.png), port: bridgePort }, bridgePort ? [bridgePort] : [])
+  bridgePort = null // handed over with the first scan
+}
+
+function progress(text, done, total) {
+  text = text.replace('Loading Python runtime…', '実行環境を読み込み中…').replace('Loading image libraries…', '画像処理ライブラリを読み込み中…').replace('Starting recognition engine…', '認識エンジンを起動中…').replace('Downloading recognition models (once)…', '認識モデルを取得中（初回のみ）…').replace(/Reading page (\d+) of (\d+)…/, '$2ページ中 $1ページを認識中…')
+  $('status').textContent = text
+  $('bar').style.width = total ? `${(100 * done) / total}%` : '0'
+}
+
+function fail(text) {
+  show('start')
+  $('unsupported').hidden = false
+  $('unsupported').textContent = text
+}
+
+// What the recogniser logs, turned into a line for the user and a share of the page done.
+let reading = { page: 0, pages: 1, staves: 1 }
+const DETAILS = [
+  [/Starting Inference/, () => ['Finding staves and symbols…', 0.05]],
+  [/Systems after the repair of the layout: \[(.*)\]/, (m) => {
+    reading.staves = m[1].split(',').reduce((sum, n) => sum + +n, 0) || 1
+    return [`Found ${m[1].split(',').length} systems`, 0.25]
+  }],
+  [/Running TrOmr inference on staff image (\d+)/, (m) => [`Reading staff ${+m[1] + 1} of ${reading.staves}…`, 0.25 + (0.75 * m[1]) / reading.staves]],
+  [/page (\d+) skipped/, (m) => [`Page ${m[1]} has no music, skipped`, 1]],
+]
+
+worker.onmessage = async ({ data }) => {
+  if (data.type === 'status') {
+    progress(data.text, data.done, data.total)
+    if (/Reading page/.test(data.text)) {
+      reading = { page: data.done, pages: data.total, staves: 1 }
+      ;[...$('thumbs').children].forEach((img, i) => (img.className = i < data.done ? 'done' : i === data.done ? 'now' : ''))
+    }
+  } else if (data.type === 'log') {
+    for (const [pattern, describe] of DETAILS) {
+      const m = data.text.match(pattern)
+      if (!m) continue
+      const [text, share] = describe(m)
+      $('detail').textContent = text
+      $('bar').style.width = `${(100 * (reading.page + Math.min(share, 1))) / reading.pages}%`
+    }
+  } else if (data.type === 'error') fail(data.text)
+  else if (data.type === 'result') {
+    Object.assign(window.sheetscan, { seconds: Math.round((performance.now() - started) / 100) / 10, bridge: data.bridge })
+    try { await open(data.xml) } catch (e) { fail(`結果を表示できませんでした: ${e.message}`) }
+  }
+}
+worker.onerror = (e) => fail(`認識処理に失敗しました。再読み込みしてお試しください。${e.message || ''}`)
+$('cancel').onclick = () => location.reload()
+
+/** The text of every page: a PDF brings it along, images are read by OCR (begun on load). */
+function readText() {
+  for (const page of pages) page.words ??= page.text.length ? page.text : ocr(page).catch(() => [])
+  return Promise.all(pages.map((p) => p.words))
+}
+
+async function open(xml) {
+  score = new Score(xml)
+  selected = null
+  progress('Reading text…', 1, 1)
+  annotate(score.doc, (await readText()).map(tokens))
+  $('title').value = score.title
+  $('scan').replaceChildren(...pages.map(scanPage))
+  show('work')
+  await draw()
+}
+
+// ---------- the two panes ----------
+
+function scanPage(page, index) {
+  const div = document.createElement('div')
+  div.className = 'page'
+  div.append(Object.assign(new Image(), { src: page.url }))
+  div.onclick = (e) => {
+    // Select the note which was read closest to the click.
+    const box = div.getBoundingClientRect()
+    const x = ((e.clientX - box.left) / box.width) * page.width
+    const y = ((e.clientY - box.top) / box.height) * page.height
+    let best = null
+    for (const el of $('score').querySelectorAll('g.note, g.rest')) {
+      const at = place(el.id)
+      if (at?.page !== index) continue
+      const d = Math.hypot(at.x - x, at.y - y)
+      if (!best || d < best.d) best = { d, id: el.id }
+    }
+    if (best) select(best.id, true)
+  }
+  return div
+}
+
+/** Where on the scan a note was read; its id says so (see pipeline.py). */
+function place(id) {
+  const m = /-p(\d+)-(\d+)-(\d+)$/.exec(id ?? '')
+  return m && { page: +m[1], x: +m[2], y: +m[3] }
+}
+
+async function draw() {
+  const report = inspectScore(score.doc)
+  $('quality').textContent = `${report.parts}パート・${report.notes}音符。` + (report.warnings.length ? `拍数の確認候補 ${report.warnings.length}件: ${report.warnings.slice(0, 8).join('、')}。弱起・カデンツァなど正しい例外も含まれます。` : '拍数の不一致は検出されませんでした。音高・移調・声部は原稿と照合してください。')
+  const pane = $('score')
+  const scroll = pane.scrollTop
+  const svgs = await score.render(Math.max(pane.clientWidth - 28, 320))
+  pane.innerHTML = svgs.map((svg) => `<div class="page">${svg}</div>`).join('')
+  pane.scrollTop = scroll
+  midi = player.load(await verovio())
+  select(selected)
+  $('bpm').value = score.tempo
+  $('undo').disabled = !score.done.length
+  $('redo').disabled = !score.undone.length
+}
+
+function select(id, reveal = false) {
+  const pane = $('score')
+  pane.querySelector('.selected')?.classList.remove('selected')
+  const el = id && pane.querySelector(`#${CSS.escape(id)}`)
+  selected = el ? id : null
+  el?.classList.add('selected')
+  if (el && reveal) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+
+  document.querySelector('.marker')?.remove()
+  const at = place(selected)
+  const page = at && $('scan').children[at.page]
+  if (page) {
+    const marker = Object.assign(document.createElement('div'), { className: 'marker' })
+    marker.style.left = `${(100 * at.x) / pages[at.page].width}%`
+    marker.style.top = `${(100 * at.y) / pages[at.page].height}%`
+    page.append(marker)
+    marker.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }
+  for (const button of $('inspector').querySelectorAll('button')) button.disabled = !selected
+  $('hint').textContent = selected ? '' : '音符をクリックして修正。左右キーで音符を移動。'
+}
+
+$('score').onclick = (e) => {
+  // Noteheads are small targets: take the closest one within reach of the click.
+  let best = { d: 14, id: null }
+  for (const el of $('score').querySelectorAll('g.note, g.rest')) {
+    const box = (el.querySelector('.notehead') ?? el).getBoundingClientRect()
+    const d = Math.hypot(
+      Math.max(box.left - e.clientX, 0, e.clientX - box.right),
+      Math.max(box.top - e.clientY, 0, e.clientY - box.bottom),
+    )
+    if (d < best.d) best = { d, id: el.id }
+  }
+  select(best.id)
+}
+
+// ---------- editing ----------
+
+async function edit(action, arg) {
+  if (!score) return
+  player.stop()
+  if (action === 'undo' || action === 'redo') {
+    if (!score[action]()) return
+  } else if (action === 'add') {
+    const added = score.add(selected)
+    if (!added) return
+    selected = added
+  } else if (!score[action](selected, arg)) return
+  await draw()
+  const sounding = player.notes.find((n) => n.id === selected)
+  if (sounding && ['move', 'alter', 'add'].includes(action)) player.ping(sounding.pitch)
+}
+
+$('inspector').onclick = (e) => {
+  const button = e.target.closest('button')
+  if (button) edit(button.dataset.do, button.dataset.arg === undefined ? undefined : +button.dataset.arg)
+}
+$('undo').onclick = () => edit('undo')
+$('redo').onclick = () => edit('redo')
+$('title').onchange = (e) => (score.title = e.target.value)
+
+function step(by) {
+  const all = [...$('score').querySelectorAll('g.note, g.rest')]
+  const next = all[all.findIndex((el) => el.id === selected) + by] ?? all[by > 0 ? 0 : all.length - 1]
+  if (next) select(next.id, true)
+}
+
+const KEYS = {
+  ArrowUp: (e) => edit('move', e.shiftKey ? 7 : 1),
+  ArrowDown: (e) => edit('move', e.shiftKey ? -7 : -1),
+  ArrowLeft: () => step(-1),
+  ArrowRight: () => step(1),
+  '+': () => edit('alter', 1), '=': () => edit('alter', 1), '-': () => edit('alter', -1), n: () => edit('alter', 0),
+  '.': () => edit('dot'), r: () => edit('rest'), a: () => edit('add'),
+  Delete: () => edit('remove'), Backspace: () => edit('remove'),
+  ' ': () => togglePlay(),
+  z: (e) => e.ctrlKey || e.metaKey ? edit(e.shiftKey ? 'redo' : 'undo') : false,
+  y: (e) => e.ctrlKey || e.metaKey ? edit('redo') : false,
+}
+for (let i = 0; i < 6; i++) KEYS[i + 1] = () => edit('duration', i)
+
+document.addEventListener('keydown', (e) => {
+  if (document.body.dataset.view !== 'work' || e.target.matches('input')) return
+  const action = KEYS[e.key] ?? KEYS[e.key.toLowerCase()]
+  if (action && action(e) !== false) e.preventDefault()
+})
+
+// ---------- playback ----------
+
+function togglePlay() {
+  if (player.playing) return player.stop()
+  const pane = $('score')
+  let shown = []
+  $('play').textContent = '■ 停止'
+  player.play(
+    player.notes.find((n) => n.id === selected)?.t ?? 0,
+    (ids) => {
+      shown.forEach((el) => el.classList.remove('playing'))
+      shown = ids.map((id) => pane.querySelector(`#${CSS.escape(id)}`)).filter(Boolean)
+      shown.forEach((el) => el.classList.add('playing'))
+      const box = shown[0]?.getBoundingClientRect()
+      const view = pane.getBoundingClientRect()
+      if (box && (box.bottom > view.bottom - 40 || box.top < view.top)) shown[0].scrollIntoView({ block: 'center', behavior: 'smooth' })
+    },
+    () => {
+      shown.forEach((el) => el.classList.remove('playing'))
+      $('play').textContent = '▶ 再生'
+    },
+  )
+}
+$('play').onclick = togglePlay
+$('bpm').onchange = async (e) => {
+  player.stop()
+  score.tempo = Math.min(Math.max(Math.round(e.target.value) || 120, 20), 400)
+  await draw()
+}
+
+// ---------- files in, files out ----------
+
+function download(name, type, content) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([content], { type })), download: name })
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 30_000) // revoking at once cancels the download in some browsers
+}
+const fileName = () => (score.title.trim() || 'score').replace(/[\\/:*?"<>|]+/g, '_')
+$('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', score.xml)
+$('save-midi').onclick = () => download(`${fileName()}.mid`, 'audio/midi', Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))
+$('again').onclick = () => {
+  player.stop()
+  show('start')
+}
+$('toggle-scan').onclick = () => {
+  document.body.classList.toggle('no-scan')
+  if (score) draw()
+}
+
+$('files').onchange = (e) => scan([...e.target.files])
+$('sample').onclick = async () => scan([new File([await (await fetch('sample.png')).blob()], 'sample.png')])
+addEventListener('dragover', (e) => (e.preventDefault(), document.body.classList.add('dragging')))
+addEventListener('dragleave', () => document.body.classList.remove('dragging'))
+addEventListener('drop', (e) => {
+  e.preventDefault()
+  document.body.classList.remove('dragging')
+  scan([...e.dataTransfer.files])
+})
+addEventListener('paste', (e) => scan([...e.clipboardData.files]))
+let resizing
+addEventListener('resize', () => {
+  clearTimeout(resizing)
+  resizing = setTimeout(() => score && document.body.dataset.view === 'work' && draw(), 250)
+})
+
+
+// Development: ?demo=a.png,b.png scans images served next to the app;
+// with &xml=result.musicxml it skips recognition and opens that result for them.
+if (query.get('demo')) {
+  const files = await Promise.all(query.get('demo').split(',').map(async (u) => new File([await (await fetch(u)).blob()], u)))
+  if (!query.get('xml')) scan(files)
+  else {
+    pages = await loadPages(files)
+    open(await (await fetch(query.get('xml'))).text())
+  }
+}
