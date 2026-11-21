@@ -70,7 +70,7 @@ body.no-scan #scan { display: none; }
 @media (max-width: 800px) {
   #work { flex-direction: column; }
   #scan { flex: 0 0 34%; border-right: 0; border-bottom: 1px solid var(--line); }
-  #title { display: none; }
+  #title { width: 12ch; }
 }
 
 .intro { font-size: clamp(1.2rem, 3vw, 1.8rem); margin: 0; text-align: center; }
@@ -79,6 +79,13 @@ body.no-scan #scan { display: none; }
 select { font: inherit; padding: .5rem; max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); }
 #work { position: relative; padding-top: 3.5rem; }
 #quality { position: absolute; top: 0; left: 0; right: 0; margin: 0; padding: .6rem 1rem; background: #e0ebff; font-size: .875rem; max-height: 3.5rem; overflow: auto; }
+#parts-panel { position: absolute; top: 3.5rem; left: 0; right: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); padding: .5rem 1rem; max-height: 65vh; overflow: auto; }
+#parts-panel summary { cursor: pointer; font-weight: 600; }
+#parts-panel p { font-size: .875rem; }
+#work { padding-top: 6.5rem; }
+.part-row { display: grid; grid-template-columns: 2rem minmax(10rem,1fr) minmax(10rem,1fr) 5rem auto; gap: .5rem; align-items: center; margin: .5rem 0; }
+.part-row input { min-width: 0; width: 100%; font: inherit; }
+@media(max-width:800px) { .part-row { grid-template-columns: 1.5rem 1fr; } .part-row select,.part-row button { grid-column: 2; } }
 body[data-view=start] #start { overflow: auto; justify-content: safe center; }
 #drop { border-color: #8da9d3; box-shadow: 0 12px 36px #183b7010; }
 #drop strong { font-family: system-ui, sans-serif; }

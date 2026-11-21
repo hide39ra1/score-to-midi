@@ -17,13 +17,14 @@ const url = args[1] ?? 'http://localhost:5173/'
 const browser = await playwright[engine].launch()
 const page = await browser.newPage()
 page.on('pageerror', (e) => console.log('page error:', e.message))
-await page.goto(url + (process.argv.includes('--nojspi') ? '?nojspi' : ''))
+await page.goto(url + (process.argv.includes('--nojspi') ? '?test&nojspi' : '?test'))
 console.log(engine, browser.version(), await page.evaluate(() => ({
   jspi: typeof WebAssembly.Suspending === 'function',
   isolated: crossOriginIsolated,
   memory: navigator.deviceMemory,
 })))
 
+await page.selectOption('#layout', 'auto')
 await page.click('#sample')
 const started = Date.now()
 let last = ''

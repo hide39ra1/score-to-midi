@@ -4,6 +4,8 @@ import { ocr } from './ocr.js'
 import { Player } from './player.js'
 import { Score, verovio } from './score.js'
 import { inspectScore } from './quality.js'
+import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments } from './instruments.js'
+import { separateMidiTracks } from './midi.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
@@ -18,6 +20,16 @@ if (typeof WebAssembly.Suspending !== 'function' || query.has('nojspi')) {
   bridgePort = channel.port2
 }
 const player = new Player()
+const SETTINGS_KEY = 'score-to-midi.settings.v1'
+const DRAFT_KEY = 'score-to-midi.draft.v1'
+try {
+  const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+  for (const id of ['page-from','page-to','layout']) if (settings[id] != null) $(id).value = settings[id]
+  $('resume').hidden = !localStorage.getItem(DRAFT_KEY)
+} catch {}
+for (const id of ['page-from','page-to','layout']) $(id).addEventListener('change', () => {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.fromEntries(['page-from','page-to','layout'].map(id => [id,$(id).value])))) } catch {}
+})
 
 let pages = [] // the scanned pages: {png, url, width, height, text}
 let score = null
@@ -32,6 +44,12 @@ window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: nul
 
 async function scan(files) {
   if (!files.length || document.body.dataset.view === 'busy') return
+  if (files.length === 1 && /\.(musicxml|xml)$/i.test(files[0].name)) {
+    player.stop()
+    pages.forEach(p => URL.revokeObjectURL(p.url)); pages = []
+    try { await open(await files[0].text(), false) } catch (e) { fail(e.message) }
+    return
+  }
   const from = Number($('page-from').value)
   const to = $('page-to').value ? Number($('page-to').value) : Infinity
   if (!Number.isInteger(from) || from < 1 || to < from || (to !== Infinity && !Number.isInteger(to))) return fail('ページ範囲を正しく指定してください。')
@@ -109,15 +127,69 @@ function readText() {
   return Promise.all(pages.map((p) => p.words))
 }
 
-async function open(xml) {
+async function open(xml, recognize = true) {
+  player.stop()
   score = new Score(xml)
   selected = null
   progress('文字を読み込み中…', 1, 1)
-  annotate(score.doc, (await readText()).map(tokens))
+  if (recognize) {
+    const text = (await readText()).map(tokens)
+    namePartsFromText(score.doc, text)
+    annotate(score.doc, text)
+  } else namePartsFromText(score.doc, [], { preservePiano: true })
   $('title').value = score.title
   $('scan').replaceChildren(...pages.map(scanPage))
+  document.body.classList.toggle('no-scan', !pages.length)
+  $('toggle-scan').disabled = !pages.length
   show('work')
+  renderParts()
   await draw()
+}
+
+function saveDraft() {
+  try {
+    localStorage.setItem(DRAFT_KEY, score.xml)
+    $('resume').hidden = false
+    $('save-status').textContent = '編集結果はこのブラウザーに自動保存済み（原稿画像・取り消し履歴は含みません）。MusicXMLでも保存できます。'
+  } catch { $('save-status').textContent = 'ブラウザーに保存できません。MusicXMLを保存してください。' }
+}
+$('resume').onclick = async () => {
+  try { const xml = localStorage.getItem(DRAFT_KEY); if (xml) { pages = []; await open(xml, false) } } catch (e) { fail(e.message) }
+}
+
+function renderParts() {
+  $('parts').replaceChildren(...partSettings(score.doc).map((part, index) => {
+    const row = document.createElement('div'); row.className = 'part-row'
+    const label = document.createElement('span'); label.textContent = `${index+1}`
+    const name = document.createElement('input'); name.value = part.name; name.setAttribute('aria-label', `${index+1}番のパート名`)
+    const instrument = document.createElement('select'); instrument.setAttribute('aria-label', `${index+1}番の楽器・音色`)
+    for (const [id,title,program,shift] of INSTRUMENTS) {
+      const option = document.createElement('option'); option.value = id; option.textContent = title; instrument.append(option)
+    }
+    // Selection is a suggestion only; the original transpose remains unchanged until applied.
+    const guesses = identifyInstruments(part.name)
+    instrument.value = guesses.length === 1 && INSTRUMENTS.find(x => x[0] === guesses[0])[2] === part.program ? guesses[0] : 'unset'
+    instrument.options[0].textContent = `未設定・その他（現在GM ${part.program}）`
+    const transpose = document.createElement('input'); transpose.type = 'number'; transpose.min = -36; transpose.max = 36; transpose.value = part.transpose; transpose.setAttribute('aria-label', `${index+1}番の移調（半音）`)
+    const apply = document.createElement('button'); apply.textContent = '選択楽器の移調を適用'
+    const commit = async (program = part.program) => {
+      if (!Number.isInteger(Number(transpose.value)) || Number(transpose.value) < -36 || Number(transpose.value) > 36) { $('save-status').textContent = '移調は−36〜36の整数で指定してください。'; return }
+      part.program = program
+      player.stop(); score.configurePart(part.id, {name:name.value,program,transpose:Number(transpose.value)}); await draw()
+    }
+    name.onchange = () => commit()
+    transpose.onchange = () => commit()
+    instrument.onchange = () => {
+      const selected = INSTRUMENTS.find(x => x[0] === instrument.value)
+      if (selected[0] !== 'unset') name.value = selected[1]
+      part.program = selected[2]; commit(part.program)
+    }
+    apply.onclick = () => {
+      const selected = INSTRUMENTS.find(x => x[0] === instrument.value)
+      transpose.value = selected[3]; commit(selected[2])
+    }
+    row.append(label,name,instrument,transpose,apply); return row
+  }))
 }
 
 // ---------- the two panes ----------
@@ -150,6 +222,8 @@ function place(id) {
 }
 
 async function draw() {
+  $('save-midi').disabled = true
+  $('play').disabled = true
   const report = inspectScore(score.doc)
   $('quality').textContent = `${report.parts}パート・${report.notes}音符。` + (report.warnings.length ? `拍数・小節数の確認候補 ${report.warnings.length}件: ${report.warnings.slice(0, 8).join('、')}。弱起・カデンツァなど正しい例外も含まれます。` : '拍数の不一致は検出されませんでした。音高・移調・声部は原稿と照合してください。')
   const unread = score.doc.querySelector('miscellaneous-field[name="unread-pages"]')?.textContent
@@ -160,10 +234,13 @@ async function draw() {
   pane.innerHTML = svgs.map((svg) => `<div class="page">${svg}</div>`).join('')
   pane.scrollTop = scroll
   midi = player.load(await verovio())
+  $('save-midi').disabled = !midi
+  $('play').disabled = !midi
   select(selected)
   $('bpm').value = score.tempo
   $('undo').disabled = !score.done.length
   $('redo').disabled = !score.undone.length
+  saveDraft()
 }
 
 function select(id, reveal = false) {
@@ -215,6 +292,7 @@ async function edit(action, arg) {
     selected = added
   } else if (!score[action](selected, arg)) return
   await draw()
+  if (action === 'undo' || action === 'redo') renderParts()
   const sounding = player.notes.find((n) => n.id === selected)
   if (sounding && ['move', 'alter', 'add'].includes(action)) player.ping(sounding.pitch)
 }
@@ -225,7 +303,7 @@ $('inspector').onclick = (e) => {
 }
 $('undo').onclick = () => edit('undo')
 $('redo').onclick = () => edit('redo')
-$('title').onchange = (e) => (score.title = e.target.value)
+$('title').onchange = (e) => { score.title = e.target.value; saveDraft() }
 
 function step(by) {
   const all = [...$('score').querySelectorAll('g.note, g.rest')]
@@ -292,7 +370,10 @@ function download(name, type, content) {
 }
 const fileName = () => (score.title.trim() || 'score').replace(/[\\/:*?"<>|]+/g, '_')
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', score.xml)
-$('save-midi').onclick = () => download(`${fileName()}.mid`, 'audio/midi', Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))
+$('save-midi').onclick = () => {
+  try { download(`${fileName()}.mid`, 'audio/midi', separateMidiTracks(Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))) }
+  catch (e) { $('save-status').textContent = `MIDIを保存できませんでした: ${e.message}`; $('parts-panel').open = true }
+}
 $('again').onclick = () => {
   player.stop()
   show('start')
@@ -303,7 +384,11 @@ $('toggle-scan').onclick = () => {
 }
 
 $('files').onchange = (e) => scan([...e.target.files])
-$('sample').onclick = async () => scan([new File([await (await fetch('sample.png')).blob()], 'sample.png')])
+if (query.has('test')) {
+  const sample = document.createElement('button'); sample.id = 'sample'; sample.textContent = '開発用サンプル認識'
+  sample.onclick = async () => scan([new File([await (await fetch('sample.png')).blob()], 'sample.png')])
+  $('start').append(sample)
+}
 addEventListener('dragover', (e) => (e.preventDefault(), document.body.classList.add('dragging')))
 addEventListener('dragleave', () => document.body.classList.remove('dragging'))
 addEventListener('drop', (e) => {

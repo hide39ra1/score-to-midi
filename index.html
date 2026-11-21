@@ -18,7 +18,7 @@
     <header>
       <a class="brand" href="./">Score to MIDI</a>
       <div class="tools">
-        <button id="play" title="Play / stop (Space)">▶ 再生</button>
+        <button id="play" title="確認用の簡易音源で再生・停止（Space）。MIDIの楽器音色とは異なります。">▶ 再生</button>
         <label class="tempo" title="Tempo in quarter notes per minute. Read from the page if it states one; change it to play slower or faster.">♩ = <input id="bpm" type="number" min="20" max="400" step="1" inputmode="numeric" /></label>
         <span class="gap"></span>
         <button id="undo" title="Undo (Ctrl+Z)">元に戻す</button>
@@ -36,18 +36,17 @@
     <main>
       <section id="start">
         <label id="drop">
-          <input id="files" type="file" accept="application/pdf,image/*" multiple hidden />
+          <input id="files" type="file" accept="application/pdf,image/*,.musicxml,.xml" multiple hidden />
           <strong>PDFの譜面をMIDIへ</strong>
-          <span>PDF・スキャン画像を選択、またはここにドロップ</span>
+          <span>PDF・画像・保存したMusicXMLを選択</span>
         </label>
-        <button id="sample">サンプルで試す（バッハのコラール）</button>
-        <h1 class="intro">譜面を読み取り、聴いて確かめる。</h1>
+        <button id="resume" hidden>前回の編集を再開</button>
         <p class="notes">PDFを画像化し、音符を認識して編集できる楽譜に変換します。原稿と照合・修正してからMIDIを保存してください。<br />処理は端末内で行い、譜面はサーバーに送信しません。初回はモデル約150 MBと実行環境をダウンロードします。</p>
         <div class="range"><label>開始ページ <input id="page-from" type="number" min="1" value="1" /></label><label>終了ページ <input id="page-to" type="number" min="1" placeholder="最後" /></label></div>
-        <label>楽譜の構成 <select id="layout"><option value="auto">自動（独奏・合唱・ピアノなど）</option><option value="full-score">大編成スコア（1ページに1段・全パート同時進行）</option></select></label>
+        <label>楽譜の構成 <select id="layout"><option value="auto">自動（独奏・合唱・ピアノなど）</option><option value="full-score" selected>大編成スコア（1ページに1段・全パート同時進行）</option></select></label>
         <p class="notes">初回は1ページだけでお試しください。打楽器・移調楽器・複雑な連符や声部は、認識結果の確認が必要です。</p>
         <p id="unsupported" role="alert" class="error" hidden></p>
-        <p class="notes credits">開発初期版 · <a href="https://github.com/hide39ra1/score-to-midi">ソースコード・使い方（AGPL-3.0）</a><br />認識: homr / Sheetscan · 楽譜描画: Verovio · PDF: PDF.js</p>
+        <details class="notes credits"><summary>使い方・ライセンス</summary><a href="https://github.com/hide39ra1/score-to-midi">ソースコード・使い方（AGPL-3.0）</a><p>認識: homr / Sheetscan · 楽譜描画: Verovio · PDF: PDF.js</p></details>
       </section>
 
       <section id="busy">
@@ -59,6 +58,7 @@
 
       <section id="work">
         <p id="quality" role="status" aria-live="polite"></p>
+        <details id="parts-panel"><summary>パート名・音色・移調を確認</summary><p>左端の楽器名はOCR候補です。併記された楽器は使用するものを選んでください。原稿が実音譜なら移調は0、移調譜なら「選択楽器の移調を適用」を使います。半音値は記譜音から実音への差です。打楽器のリズム・音色は未対応です。</p><div id="parts"></div><p id="save-status" role="status"></p></details>
         <div id="scan" aria-label="原稿"></div>
         <div id="score" aria-label="認識した楽譜" tabindex="0"></div>
       </section>

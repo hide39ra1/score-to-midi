@@ -1,6 +1,7 @@
 // The score being edited: a MusicXML document, rendered by Verovio, changed note by note.
 import createVerovioModule from 'verovio/wasm'
 import { VerovioToolkit } from 'verovio/esm'
+import { applyPartSettings } from './instruments.js'
 
 const STEPS = 'CDEFGAB'
 const SHARPS = 'FCGDAEB' // order in which key signatures add sharps; flats are the reverse
@@ -104,6 +105,7 @@ export function tempoMark(doc, { bpm, unit = 'quarter', dotted = false, words })
 export class Score {
   constructor(xml) {
     this.doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (this.doc.querySelector('parsererror') || this.doc.documentElement.tagName !== 'score-partwise') throw new Error('対応するMusicXML（score-partwise）ではありません。')
     this.doc.querySelectorAll('measure').forEach(spell)
     this.done = []
     this.undone = []
@@ -116,6 +118,10 @@ export class Score {
 
   note(id) {
     return this.doc.querySelector(`note[id="${CSS.escape(id)}"]`)
+  }
+
+  configurePart(id, settings) {
+    return this.#change(() => applyPartSettings(this.doc, id, settings))
   }
 
   /** Run a change to the document; it may return false for "does not apply". */
