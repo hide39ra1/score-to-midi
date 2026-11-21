@@ -258,13 +258,21 @@ def _staff_boxes(rows, to_input):
     return boxes
 
 
-def _read_page(path):
+def _read_page(path, full_score=False):
     """One page image -> (MusicXML <score-partwise> element, staff boxes)."""
     global _line_above
     _line_above = None
     rows, image, debug, _, _, to_input = detect_staffs_in_image(path, _CONFIG)
     try:
-        rows = _split_unjoined_systems(image, repair_systems(debug, rows))
+        rows = repair_systems(debug, rows)
+        if full_score:
+            # In a full wind-band score, separate brackets can label alternative
+            # instruments while every staff on the page sounds simultaneously.
+            # This mode explicitly assumes ONE system per page; do not guess.
+            all_staffs = sorted([staff for row in rows for staff in row.staffs], key=lambda staff: staff.min_y)
+            rows = [MultiStaff(all_staffs, [])]
+        else:
+            rows = _split_unjoined_systems(image, rows)
         voices = staff_parsing.parse_staffs(debug, rows, image, config=_TRANSFORMER)
     finally:
         debug.clean_debug_files_from_previous_runs()
@@ -311,18 +319,19 @@ def _give_every_staff_a_clef(score):
                 first.insert(list(first).index(last[-1]) + 1 if last else len(first), copy)
 
 
-def scan(paths, progress=lambda done, total: None):
+def scan(paths, progress=lambda done, total: None, full_score=False):
     """Recognise each page image; pages without music are skipped. Returns MusicXML text.
     The staff boxes of every page ride along as the miscellaneous field "staff-layout"."""
     global _page
     with tempfile.TemporaryDirectory() as tmp:
-        xmls, layout = [], [[] for _ in paths]
+        xmls, layout, skipped = [], [[] for _ in paths], []
         for _page, path in enumerate(paths):
             progress(_page, len(paths))
             try:
-                xml, layout[_page] = _read_page(path)
+                xml, layout[_page] = _read_page(path, full_score)
             except Exception as e:  # e.g. a title page: "No staffs found"
                 print(f"page {_page + 1} skipped: {e}", file=sys.stderr)
+                skipped.append(_page + 1)
                 continue
             xmls.append(os.path.join(tmp, f"{_page}.musicxml"))
             ET.ElementTree(xml).write(xmls[-1], encoding="unicode", xml_declaration=True)
@@ -335,4 +344,8 @@ def scan(paths, progress=lambda done, total: None):
         field = ET.SubElement(ET.SubElement(merged.find("identification"), "miscellaneous"), "miscellaneous-field")
         field.set("name", "staff-layout")
         field.text = json.dumps(layout)
+        if skipped:
+            omitted = ET.SubElement(merged.find("identification/miscellaneous"), "miscellaneous-field")
+            omitted.set("name", "unread-pages")
+            omitted.text = ", ".join(map(str, skipped))
         return ET.tostring(merged, encoding="unicode", xml_declaration=True)

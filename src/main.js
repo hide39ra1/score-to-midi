@@ -51,7 +51,7 @@ async function scan(files) {
   readText() // OCR runs beside the recognition
   // Copies go to the worker; the originals stay here for the side-by-side view.
   started = performance.now()
-  worker.postMessage({ pages: pages.map((p) => p.png), port: bridgePort }, bridgePort ? [bridgePort] : [])
+  worker.postMessage({ pages: pages.map((p) => p.png), layout: $('layout').value, port: bridgePort }, bridgePort ? [bridgePort] : [])
   bridgePort = null // handed over with the first scan
 }
 
@@ -70,13 +70,13 @@ function fail(text) {
 // What the recogniser logs, turned into a line for the user and a share of the page done.
 let reading = { page: 0, pages: 1, staves: 1 }
 const DETAILS = [
-  [/Starting Inference/, () => ['Finding staves and symbols…', 0.05]],
+  [/Starting Inference/, () => ['五線と記号を検出中…', 0.05]],
   [/Systems after the repair of the layout: \[(.*)\]/, (m) => {
     reading.staves = m[1].split(',').reduce((sum, n) => sum + +n, 0) || 1
-    return [`Found ${m[1].split(',').length} systems`, 0.25]
+    return [`${m[1].split(',').length}段を検出しました`, 0.25]
   }],
-  [/Running TrOmr inference on staff image (\d+)/, (m) => [`Reading staff ${+m[1] + 1} of ${reading.staves}…`, 0.25 + (0.75 * m[1]) / reading.staves]],
-  [/page (\d+) skipped/, (m) => [`Page ${m[1]} has no music, skipped`, 1]],
+  [/Running TrOmr inference on staff image (\d+)/, (m) => [`五線 ${+m[1] + 1}/${reading.staves} を認識中…`, 0.25 + (0.75 * m[1]) / reading.staves]],
+  [/page (\d+) skipped/, (m) => [`${m[1]}ページを認識できずスキップしました`, 1]],
 ]
 
 worker.onmessage = async ({ data }) => {
@@ -112,7 +112,7 @@ function readText() {
 async function open(xml) {
   score = new Score(xml)
   selected = null
-  progress('Reading text…', 1, 1)
+  progress('文字を読み込み中…', 1, 1)
   annotate(score.doc, (await readText()).map(tokens))
   $('title').value = score.title
   $('scan').replaceChildren(...pages.map(scanPage))
@@ -151,7 +151,9 @@ function place(id) {
 
 async function draw() {
   const report = inspectScore(score.doc)
-  $('quality').textContent = `${report.parts}パート・${report.notes}音符。` + (report.warnings.length ? `拍数の確認候補 ${report.warnings.length}件: ${report.warnings.slice(0, 8).join('、')}。弱起・カデンツァなど正しい例外も含まれます。` : '拍数の不一致は検出されませんでした。音高・移調・声部は原稿と照合してください。')
+  $('quality').textContent = `${report.parts}パート・${report.notes}音符。` + (report.warnings.length ? `拍数・小節数の確認候補 ${report.warnings.length}件: ${report.warnings.slice(0, 8).join('、')}。弱起・カデンツァなど正しい例外も含まれます。` : '拍数の不一致は検出されませんでした。音高・移調・声部は原稿と照合してください。')
+  const unread = score.doc.querySelector('miscellaneous-field[name="unread-pages"]')?.textContent
+  if (unread) $('quality').textContent += ` 認識できなかったページ（選択範囲内の順番）: ${unread}。出力には含まれていません。`
   const pane = $('score')
   const scroll = pane.scrollTop
   const svgs = await score.render(Math.max(pane.clientWidth - 28, 320))
@@ -246,7 +248,7 @@ const KEYS = {
 for (let i = 0; i < 6; i++) KEYS[i + 1] = () => edit('duration', i)
 
 document.addEventListener('keydown', (e) => {
-  if (document.body.dataset.view !== 'work' || e.target.matches('input')) return
+  if (document.body.dataset.view !== 'work' || e.target.matches('input, select, textarea')) return
   const action = KEYS[e.key] ?? KEYS[e.key.toLowerCase()]
   if (action && action(e) !== false) e.preventDefault()
 })

@@ -76,6 +76,7 @@ body.no-scan #scan { display: none; }
 .intro { font-size: clamp(1.2rem, 3vw, 1.8rem); margin: 0; text-align: center; }
 .range { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
 .range input { width: 5.5rem; }
+select { font: inherit; padding: .5rem; max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); }
 #work { position: relative; padding-top: 3.5rem; }
 #quality { position: absolute; top: 0; left: 0; right: 0; margin: 0; padding: .6rem 1rem; background: #e0ebff; font-size: .875rem; max-height: 3.5rem; overflow: auto; }
 body[data-view=start] #start { overflow: auto; justify-content: safe center; }

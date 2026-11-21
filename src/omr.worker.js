@@ -81,7 +81,8 @@ self.onmessage = async ({ data }) => {
       return path
     })
     const onPage = (done, total) => post('status', { text: `Reading page ${Math.min(done + 1, total)} of ${total}…`, done, total })
-    const xml = jspi ? await scan.callPromising(pyodide.toPy(paths), onPage) : scan(pyodide.toPy(paths), onPage)
+    const fullScore = data.layout === 'full-score'
+    const xml = jspi ? await scan.callPromising(pyodide.toPy(paths), onPage, fullScore) : scan(pyodide.toPy(paths), onPage, fullScore)
     post('result', { xml, bridge: jspi ? 'jspi' : 'shared memory' })
   } catch (e) {
     post('error', { text: String(e?.message ?? e) })

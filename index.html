@@ -44,6 +44,7 @@
         <h1 class="intro">譜面を読み取り、聴いて確かめる。</h1>
         <p class="notes">PDFを画像化し、音符を認識して編集できる楽譜に変換します。原稿と照合・修正してからMIDIを保存してください。<br />処理は端末内で行い、譜面はサーバーに送信しません。初回はモデル約150 MBと実行環境をダウンロードします。</p>
         <div class="range"><label>開始ページ <input id="page-from" type="number" min="1" value="1" /></label><label>終了ページ <input id="page-to" type="number" min="1" placeholder="最後" /></label></div>
+        <label>楽譜の構成 <select id="layout"><option value="auto">自動（独奏・合唱・ピアノなど）</option><option value="full-score">大編成スコア（1ページに1段・全パート同時進行）</option></select></label>
         <p class="notes">初回は1ページだけでお試しください。打楽器・移調楽器・複雑な連符や声部は、認識結果の確認が必要です。</p>
         <p id="unsupported" role="alert" class="error" hidden></p>
         <p class="notes credits">開発初期版 · <a href="https://github.com/hide39ra1/score-to-midi">ソースコード・使い方（AGPL-3.0）</a><br />認識: homr / Sheetscan · 楽譜描画: Verovio · PDF: PDF.js</p>

@@ -13,8 +13,12 @@ export function measureSpan(events) {
 
 export function inspectScore(doc) {
   const warnings = []
+  const parts = [...doc.querySelectorAll('score-partwise > part')]
+  const maxMeasures = Math.max(0, ...parts.map((part) => part.querySelectorAll(':scope > measure').length))
   let measures = 0
-  for (const part of doc.querySelectorAll('score-partwise > part')) {
+  for (const part of parts) {
+    const count = part.querySelectorAll(':scope > measure').length
+    if (count !== maxMeasures) warnings.push(`${part.id} 小節数 ${count}/${maxMeasures}`)
     let divisions = 1, beats = 4, beatType = 4
     for (const measure of part.querySelectorAll(':scope > measure')) {
       measures++
