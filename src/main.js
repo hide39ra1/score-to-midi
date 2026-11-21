@@ -11,6 +11,7 @@ import {storeGeometry,inspectGeometry} from './geometry-report.js'
 import {staffY} from './structure.js'
 import {normalizeTies,collectTiePairs,inspectTies,tieCandidates} from './ties.js'
 import {exportForMuseScore} from './musescore.js'
+import {MARKS,DYNAMICS,annotateDirections,inspectSymbols,listNoteSymbols,symbolReview,attributeContext,parseMeter,normalizeSymbolStructure} from './symbols.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
@@ -172,8 +173,11 @@ function readText() {
 
 async function open(xml, recognize = true) {
   player.stop()
+  spanStart=null
+  $('span-status').textContent=''
   unnamedFileName = unknownTitle()
   score = new Score(xml)
+  normalizeSymbolStructure(score.doc)
   await ensureGeometry()
   if(pages.length) storeGeometry(score.doc,pages.map(page=>page.structure))
   selected = null
@@ -181,6 +185,7 @@ async function open(xml, recognize = true) {
   if (recognize) {
     const text = (await readText()).map(tokens)
     namePartsFromText(score.doc, text)
+    annotateDirections(score.doc,text)
     const result = annotate(score.doc, text)
     // Engine placeholders and author guesses are not a verified title.
     score.title = result.title || sourceTitle(inputName) || unknownTitle()
@@ -200,6 +205,14 @@ async function open(xml, recognize = true) {
       try {candidates.push(...await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,operation:'ties',png:image.png,structure:image.structure,page,pairs:pairs.filter(p=>p.a.page===page)})}))}catch{}
     }
     tieCandidates(score.doc,candidates)
+    progress('奏法記号の画像を照合中…')
+    const notes=[...score.doc.querySelectorAll('note[id]')].filter(n=>n.querySelector('pitch')).map(n=>{const at=/-p(\d+)-(\d+)-(\d+)$/.exec(n.id);return at?{id:n.id,page:+at[1],x:+at[2],y:+at[3],staccato:!!n.querySelector('staccato')}:null}).filter(Boolean)
+    const reviews=[]
+    for(const [page,image] of pages.entries())if(image.structure?.staves?.length) {
+      try{reviews.push(...await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,operation:'symbols',png:image.png,structure:image.structure,page,notes:notes.filter(n=>n.page===page)})}))}
+      catch(error){reviews.push({kind:'error',message:`${page+1}ページ: ${error.message}`})}
+    }
+    symbolReview(score.doc,reviews)
   }
   routeParts(score.doc)
   $('title').value = score.title
@@ -299,6 +312,7 @@ async function draw() {
   if (unread) $('quality').textContent += ` 認識できなかったページ（選択範囲内の順番）: ${unread}。出力には含まれていません。`
   drawGeometry()
   drawTies()
+  drawSymbols()
   const pane = $('score')
   const scroll = pane.scrollTop
   const svgs = await score.render(Math.max(pane.clientWidth - 28, 320))
@@ -344,6 +358,7 @@ function drawGeometry() {
       const staff=structures[index]?.staves.find(s=>s.id===symbol.staff),radius=(staff?.spacing||8)*.7
       shape('circle',{cx:symbol.x,cy:symbol.y,r:radius,class:wrong.has(symbol.id)?'symbol-mismatch':symbol.kind==='rest'?'rest-anchor':'note-anchor'},`${symbol.kind==='rest'?'休符':'音符'} ${symbol.type||''}／五線${symbol.staff??'?'} 小節${symbol.measure??'?'} (${symbol.x},${symbol.y})`)
     }
+    for(const item of symbolReview(score.doc).filter(item=>item.page===index&&item.kind==='missing'))shape('circle',{cx:item.x,cy:item.y,r:5,class:'symbol-mismatch'},'スタッカートの点形状候補（未確定）')
     overlay.replaceChildren(...children)
   })
 }
@@ -360,6 +375,54 @@ function drawTies() {
     button.onclick=async()=>{player.stop();if(score.connectTie(arc.startId,arc.endId)) await draw()}
     li.append(preview,button);return li
   }))
+}
+
+for(const [value,label] of Object.entries(MARKS))$('mark-type').append(new Option(label,value))
+for(const value of DYNAMICS)$('dynamic-type').append(new Option(value,value))
+$('dynamic-type').value='mf'
+let spanStart=null
+$('span-start').onclick=()=>{spanStart=selected;$('span-status').textContent='始点を設定しました。後の音符を選び「選択音符まで結ぶ」を押してください。';$('span-end').disabled=!selected}
+$('span-end').onclick=async()=>{
+  if(!spanStart||!selected)return
+  player.stop()
+  if(score.span(spanStart,selected,$('span-type').value)){spanStart=null;$('span-status').textContent='範囲記号を追加しました。';await draw()}
+  else $('span-status').textContent='同じパート・五線の後の音符を選んでください。スラーは同じ声部の音符同士を結びます。'
+}
+async function symbolChange(change){if(!score||!selected)return;player.stop();if(change())await draw()}
+$('mark-toggle').onclick=()=>symbolChange(()=>score.mark(selected,$('mark-type').value))
+$('dynamic-add').onclick=()=>symbolChange(()=>score.direction(selected,'dynamic',$('dynamic-type').value))
+$('direction-add').onclick=()=>symbolChange(()=>score.direction(selected,'words',$('direction-text').value.trim()))
+$('attributes-apply').onclick=()=>{
+  if(!parseMeter($('meter-beats').value,$('meter-unit').value)||!Number.isInteger(Number($('key-fifths').value))||Math.abs(Number($('key-fifths').value))>7){$('symbol-selection').textContent='拍子は正の分子（3+2なども可）と1・2・4・8・16・32・64の分母、調号は−7〜7を指定してください。';return}
+  symbolChange(()=>score.attributes(selected,{clef:$('clef-type').value,fifths:Number($('key-fifths').value),beats:$('meter-beats').value,beatType:Number($('meter-unit').value)}))
+}
+function selectedSymbols() {
+  const note=score?.note(selected),pitched=!!note?.querySelector('pitch,unpitched')
+  $('mark-toggle').disabled=!pitched
+  $('dynamic-add').disabled=$('direction-add').disabled=!note
+  $('attributes-apply').disabled=!note
+  $('span-start').disabled=!pitched;$('span-end').disabled=!pitched||!spanStart
+  if(note){const context=attributeContext(note);$('clef-type').value=context.clef;$('key-fifths').value=context.fifths;$('meter-beats').value=context.beats;$('meter-unit').value=context.beatType}
+  $('symbol-selection').textContent=note?`${note.closest('part').id} 第${note.closest('measure').getAttribute('number')}小節・選択位置の記号`:'音符・休符を選択してください。'
+  $('selected-symbols').replaceChildren(...listNoteSymbols(note).map((mark,index)=>{const li=document.createElement('li'),button=document.createElement('button');button.textContent=`${mark.label} を削除`;button.onclick=()=>symbolChange(()=>score.removeSymbol(selected,index));li.append(button);return li}))
+}
+function drawSymbols() {
+  const report=inspectSymbols(score.doc),c=report.counts
+  $('symbol-summary').textContent=`音部記号 ${c.clef} / 調号 ${c.key} / 拍子 ${c.time} / 強弱 ${c.dynamics} / アクセント ${c.accent} / スタッカート ${c.staccato} / フェルマータ ${c.fermata} / ヘアピン ${c.wedge} / 反復 ${c.repeat}。出力数であり、原稿の全記号を検出できたことを示すものではありません。`
+  $('symbol-warnings').replaceChildren(...report.warnings.map(message=>{const li=document.createElement('li');li.textContent=message;return li}))
+  const missing=[],uncertain=[]
+  for(const item of symbolReview(score.doc).filter(item=>item.kind==='error'||!!score.note(item.id))) {
+    const li=document.createElement('li')
+    if(item.kind==='error'){li.textContent=item.message;missing.push(li);continue}
+    const present=!!score.note(item.id).querySelector(item.tag)
+    if(item.kind==='missing'&&present)continue
+    if(item.kind==='unconfirmed'&&!present)continue
+    const preview=document.createElement('button');preview.textContent=item.kind==='missing'?'点形状あり・スタッカート未出力：確認':'スタッカートの点形状を照合できません：確認'
+    preview.onclick=()=>{select(item.id,true);if(pages.length){document.body.classList.add('show-structure');$('toggle-structure').setAttribute('aria-pressed','true')}$('symbol-selection').textContent+='／原稿を確認して「記号を追加・解除」で修正できます。';$('mark-type').value=item.tag}
+    li.append(preview);(item.kind==='missing'?missing:uncertain).push(li)
+  }
+  if(uncertain.length){const li=document.createElement('li'),details=document.createElement('details'),summary=document.createElement('summary'),list=document.createElement('ul');summary.textContent=`点形状を照合できない既出記号 ${uncertain.length}件（未検証）`;list.append(...uncertain);details.append(summary,list);li.append(details);missing.push(li)}
+  $('symbol-review').replaceChildren(...missing)
 }
 
 function select(id, reveal = false) {
@@ -382,6 +445,7 @@ function select(id, reveal = false) {
   }
   for (const button of $('inspector').querySelectorAll('button')) button.disabled = !selected
   $('hint').textContent = selected ? '' : '音符をクリックして修正。左右キーで音符を移動。'
+  selectedSymbols()
 }
 
 $('score').onclick = (e) => {
@@ -494,7 +558,7 @@ function updateSaveName() {
   $('save-name').textContent = `保存名: ${fileName()}.mid / ${fileName()}.musicxml`
 }
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', exportForMuseScore(score.doc))
-$('save-analysis').onclick=()=>download(`${fileName()}_解析.json`,'application/json',JSON.stringify(geometryReport,null,2))
+$('save-analysis').onclick=()=>download(`${fileName()}_解析.json`,'application/json',JSON.stringify({...geometryReport,notation:inspectSymbols(score.doc),notationReview:symbolReview(score.doc)},null,2))
 $('save-midi').onclick = () => {
   try { download(`${fileName()}.mid`, 'audio/midi', separateMidiTracks(Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))) }
   catch (e) { $('save-status').textContent = `MIDIを保存できませんでした: ${e.message}`; $('parts-panel').open = true }
@@ -539,3 +603,4 @@ if (query.get('demo')) {
     open(await (await fetch(query.get('xml'))).text())
   }
 }
+else if(import.meta.env.DEV&&query.get('xml')) open(await (await fetch(query.get('xml'))).text(),false)

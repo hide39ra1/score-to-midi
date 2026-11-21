@@ -3,6 +3,7 @@ import createVerovioModule from 'verovio/wasm'
 import { VerovioToolkit } from 'verovio/esm'
 import { applyPartSettings } from './instruments.js'
 import {collectTiePairs,setTie} from './ties.js'
+import {toggleMark,addDirection,listNoteSymbols,setAttributes,connectSpan} from './symbols.js'
 
 const STEPS = 'CDEFGAB'
 const SHARPS = 'FCGDAEB' // order in which key signatures add sharps; flats are the reverse
@@ -34,7 +35,8 @@ const after = (name) => TAIL.slice(TAIL.indexOf(name) + 1)
 function inForce(note, selector, fallback) {
   let value = fallback
   for (const measure of note.closest('part').children) {
-    const found = measure.querySelector(selector)
+    const staff=child(note,'staff')?.textContent||'1'
+    const found = selector==='key > fifths'?[...measure.querySelectorAll('attributes > key')].filter(key=>!key.hasAttribute('number')||key.getAttribute('number')===staff).at(-1)?.querySelector('fifths'):measure.querySelector(selector)
     if (found) value = +found.textContent
     if (measure.contains(note)) break
   }
@@ -53,8 +55,6 @@ function keyAlter(step, fifths) {
  * work out the signs themselves - Verovio, which draws the score here, does not.)
  */
 export function spell(measure) {
-  const first = measure.querySelector('note')
-  const fifths = first ? inForce(first, 'key > fifths', 0) : 0
   const sounding = new Map() // staff/step+octave -> alteration in force
   for (const note of measure.querySelectorAll('note')) {
     const pitch = child(note, 'pitch')
@@ -63,6 +63,7 @@ export function spell(measure) {
       continue
     }
     const step = child(pitch, 'step').textContent
+    const fifths = inForce(note, 'key > fifths', 0)
     const line = `${child(note, 'staff')?.textContent ?? 1}/${step}${child(pitch, 'octave').textContent}`
     const alter = +(child(pitch, 'alter')?.textContent ?? 0)
     const expected = sounding.has(line) ? sounding.get(line) : keyAlter(step, fifths)
@@ -133,6 +134,24 @@ export class Score {
   connectTie(startId,endId) {
     if(!collectTiePairs(this.doc).some(pair=>pair.a.id===startId&&pair.b.id===endId)) return false
     return this.#change(()=>setTie(this.doc,startId,endId,true))
+  }
+  mark(id,tag) { return this.#edit(id,note=>toggleMark(note,tag)) }
+  attributes(id,values) {return this.#edit(id,note=>{if(!setAttributes(note,values))return false;note.closest('part').querySelectorAll('measure').forEach(spell)})}
+  direction(id,kind,value) { const note=this.note(id);return !!note&&this.#change(()=>addDirection(note,kind,value)) }
+  span(startId,endId,kind){return this.#change(()=>connectSpan(this.note(startId),this.note(endId),kind))}
+  removeSymbol(id,index) {
+    const mark=listNoteSymbols(this.note(id))[index]
+    return !!mark&&this.#change(()=>{
+      // Removing a span removes both ends, so it cannot leave a hanging slur/wedge.
+      const el=mark.element,span=el.tagName==='slur'?el:el.querySelector('wedge')
+      if(span) {
+        const staffOf=element=>element.closest('note, direction')?.querySelector('staff')?.textContent||'1'
+        const sequence=[...this.note(id).closest('part').querySelectorAll(span.tagName)].filter(other=>(other.getAttribute('number')||'1')===(span.getAttribute('number')||'1')&&staffOf(other)===staffOf(span))
+        const index=sequence.indexOf(span),stop=span.getAttribute('type')==='stop'
+        const other=stop?sequence[index-1]:sequence[index+1]
+        for(const target of [span,...(other&&(other.getAttribute('type')==='stop')!==stop?[other]:[])]) {if(target.tagName==='wedge')target.closest('direction').remove();else target.remove()}
+      } else el.remove()
+    })
   }
 
   /** Run a change to the document; it may return false for "does not apply". */

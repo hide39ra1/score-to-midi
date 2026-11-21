@@ -6,6 +6,7 @@
 import { tempoMark } from './score.js'
 import { detectTitle } from './title.js'
 import {staffLayout} from './geometry-report.js'
+import {classifyDirection} from './symbols.js'
 
 // A root, a quality built from the usual pieces only (so words like "Der" don't match), a bass.
 const CHORD = /^([A-G])([#b♯♭]?)((?:maj|min|dim|aug|sus|add|omit|no|m|M|\d|[#b♯♭+°ø△()\-,])*)(?:\/([A-G])([#b♯♭]?))?$/
@@ -148,7 +149,7 @@ export function annotate(doc, text) {
   }
 
   layout.forEach((staffs, page) => {
-    const all = text[page] ?? []
+    const all = (text[page] ?? []).filter(t=>!classifyDirection(t.str))
     if (!staffs.length || !all.length) return
     const middle = (t) => t.y - 0.35 * t.h
     const inStaff = (t) => staffs.some(([, top, , bottom]) => middle(t) > top && middle(t) < bottom)

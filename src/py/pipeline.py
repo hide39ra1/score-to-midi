@@ -295,6 +295,22 @@ _CHILD_ORDER = {
 }
 
 
+def _normalize_notations(score):
+    """homr puts mordents under articulations; MusicXML requires ornaments."""
+    for notation in score.iter("notations"):
+        for articulations in notation.findall("articulations"):
+            misplaced = articulations.findall("mordent")
+            if misplaced:
+                ornaments = notation.find("ornaments")
+                if ornaments is None:
+                    ornaments = ET.SubElement(notation, "ornaments")
+                for mark in misplaced:
+                    articulations.remove(mark)
+                    ornaments.append(mark)
+            if len(articulations) == 0:
+                notation.remove(articulations)
+
+
 def _order_children(score):
     for tag, order in _CHILD_ORDER.items():
         rank = {name: i for i, name in enumerate(order.split())}
@@ -340,6 +356,7 @@ def scan(paths, progress=lambda done, total: None, full_score=False):
             raise ValueError("No music found on any page")
         merged = process_concat(xmls)[0] if len(xmls) > 1 else ET.parse(xmls[0]).getroot()
         _give_every_staff_a_clef(merged)
+        _normalize_notations(merged)
         _order_children(merged)
         field = ET.SubElement(ET.SubElement(merged.find("identification"), "miscellaneous"), "miscellaneous-field")
         field.set("name", "staff-layout")

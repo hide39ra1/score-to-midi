@@ -29,5 +29,5 @@ async function read(page) {
     // Notes and beams come out as low-confidence scraps. Besides words, keep the hyphens
     // between syllables and the "= 120" of a metronome mark.
     .filter((word) => word.confidence > 55 && /\p{L}|^-+$|=|^\d{2,3}\)?$/u.test(word.text))
-    .map(({ text, bbox }) => ({ str: text, x: bbox.x0, w: bbox.x1 - bbox.x0, y: bbox.y1, h: bbox.y1 - bbox.y0 }))
+    .map(({ text, bbox, confidence }) => ({ str: text, confidence, x: bbox.x0, w: bbox.x1 - bbox.x0, y: bbox.y1, h: bbox.y1 - bbox.y0 }))
 }
