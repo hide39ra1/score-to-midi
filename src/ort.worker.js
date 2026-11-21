@@ -25,7 +25,7 @@ async function handle(data, port) {
     flag = new Int32Array(data.shared, 0, 2)
     bytes = new Uint8Array(data.shared, 8)
     try {
-      await load(data.base, (done, total) => port.postMessage({ done, total }))
+      await load(data.base, (done, total) => port.postMessage({ done, total }),data.mode||'auto',backend=>port.postMessage({backend}))
       port.postMessage({ loaded: true })
     } catch (e) {
       port.postMessage({ failed: String(e?.message ?? e) })

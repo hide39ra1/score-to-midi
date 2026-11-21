@@ -19,15 +19,15 @@ const post = (type, data = {}) => self.postMessage({ type, ...data })
 const downloading = (done, total) => post('status', { text: 'Downloading recognition models (once)…', done, total })
 
 /** Start the networks in the worker behind `port`; returns names() and run() which block for the answer. */
-async function startBlockingBridge(port) {
+async function startBlockingBridge(port,mode) {
   if (typeof SharedArrayBuffer !== 'function')
     throw new Error('This browser gave the page no shared memory, which the recogniser needs here. Reload the page once; if that does not help, use a current Chrome, Edge or Firefox.')
   const shared = new SharedArrayBuffer(8 + SHARED)
   const flag = new Int32Array(shared, 0, 2) // [answer is there, length of its JSON header]
   const bytes = new Uint8Array(shared, 8)
   await new Promise((resolve, reject) => {
-    port.onmessage = ({ data }) => (data.loaded ? resolve() : data.failed ? reject(new Error(data.failed)) : downloading(data.done, data.total))
-    port.postMessage({ op: 'load', base: BASE, shared })
+    port.onmessage = ({ data }) => (data.backend?post('backend',data.backend):data.loaded ? resolve() : data.failed ? reject(new Error(data.failed)) : downloading(data.done, data.total))
+    port.postMessage({ op: 'load', base: BASE, shared,mode })
   })
   const callSync = (message) => {
     Atomics.store(flag, 0, 0)
@@ -48,13 +48,13 @@ async function startBlockingBridge(port) {
 }
 
 let ready
-function init(port) {
+function init(port,mode) {
   return (ready ??= (async () => {
     const jspi = !port
     post('status', { text: 'Loading Python runtime…' })
     const { loadPyodide } = await import(/* @vite-ignore */ PYODIDE + 'pyodide.mjs')
     // The networks download while Python boots.
-    const bridge = jspi ? networks.load(BASE, downloading).then(() => networks) : startBlockingBridge(port)
+    const bridge = jspi ? networks.load(BASE, downloading,mode,backend=>post('backend',backend)).then(() => networks) : startBlockingBridge(port,mode)
     bridge.catch(() => {}) // reported below, when awaited
 
     const pyodide = await loadPyodide({ indexURL: PYODIDE, stderr: (text) => post('log', { text }) })
@@ -74,7 +74,7 @@ function init(port) {
 
 self.onmessage = async ({ data }) => {
   try {
-    const { pyodide, scan, jspi } = await init(data.port)
+    const { pyodide, scan, jspi } = await init(data.port,data.mode||'auto')
     const paths = data.pages.map((bytes, i) => {
       const path = `/work/p${i + 1}.png`
       pyodide.FS.writeFile(path, new Uint8Array(bytes))

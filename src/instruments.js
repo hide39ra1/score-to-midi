@@ -1,6 +1,7 @@
 // GM programs are MusicXML's 1-based values. Transposition is sounding minus written pitch.
 import { melodicRoute } from './midi.js'
 import {staffLayout} from './geometry-report.js'
+import {MUSESCORE_INSTRUMENTS} from './musescore.js'
 export const INSTRUMENTS = [
   ['unset','未設定',1,0], ['flute','フルート',74,0], ['piccolo','ピッコロ',73,12],
   ['oboe','オーボエ',69,0], ['clarinet','B♭クラリネット',72,-2], ['bassclarinet','B♭バスクラリネット',72,-14],
@@ -38,6 +39,12 @@ const set = (doc, parent, tag, text) => {
   return el
 }
 
+// MusicXML requires metadata before MIDI routing, including after repeated edits.
+export function orderScorePart(meta) {
+  const order = ['identification','part-link','part-name','part-name-display','part-abbreviation','part-abbreviation-display','group','score-instrument','midi-device','midi-instrument']
+  for (const child of [...meta.children].sort((a,b) => order.indexOf(a.tagName)-order.indexOf(b.tagName))) meta.append(child)
+}
+
 export function partSettings(doc) {
   return [...doc.querySelectorAll('part-list > score-part')].map((meta, index) => {
     const part = [...doc.querySelectorAll('score-partwise > part')].find(p => p.id === meta.id)
@@ -58,10 +65,11 @@ export function routeParts(doc) {
     meta.insertBefore(device,midi)
     const channel = set(doc,midi,'midi-channel',route.channel+1)
     midi.insertBefore(channel,midi.firstChild)
+    orderScorePart(meta)
   }
 }
 
-export function applyPartSettings(doc, id, {name, program, transpose}) {
+export function applyPartSettings(doc, id, {name, program, transpose,instrumentId}) {
   const meta = [...doc.querySelectorAll('part-list > score-part')].find(p => p.id === id)
   const part = [...doc.querySelectorAll('score-partwise > part')].find(p => p.id === id)
   if (!meta || !part) return
@@ -69,14 +77,21 @@ export function applyPartSettings(doc, id, {name, program, transpose}) {
   meta.querySelectorAll('part-name-display, part-abbreviation, part-abbreviation-display').forEach(el => el.remove())
   let instrument = meta.querySelector('score-instrument')
   if (!instrument) { instrument = doc.createElement('score-instrument'); instrument.id = `${id}-instrument`; meta.append(instrument) }
-  set(doc, instrument, 'instrument-name', name.trim() || id)
+  const guesses=identifyInstruments(name)
+  const preset=MUSESCORE_INSTRUMENTS[instrumentId]||(guesses.length===1?MUSESCORE_INSTRUMENTS[guesses[0]]:null)
+  set(doc, instrument, 'instrument-name', preset?.[0]||name.trim() || id)
   instrument.querySelectorAll('instrument-sound').forEach(el => el.remove())
+  if(preset) {
+    set(doc,instrument,'instrument-sound',preset[1])
+    const abbreviation=set(doc,meta,'part-abbreviation',preset[2]);meta.insertBefore(abbreviation,instrument)
+  }
   // Keep the MusicXML child order: score-instrument before midi-instrument.
   let midi = meta.querySelector('midi-instrument')
   if (!midi) { midi = doc.createElement('midi-instrument'); meta.append(midi) }
   meta.insertBefore(instrument, midi)
   midi.id = instrument.id
   set(doc, midi, 'midi-program', Math.max(1, Math.min(128, Math.round(program) || 1)))
+  orderScorePart(meta)
   const amount = Math.max(-36, Math.min(36, Math.round(transpose) || 0))
   // Explicit user assignment replaces earlier inferred shifts, including later attributes.
   part.querySelectorAll('transpose').forEach(el => el.remove())

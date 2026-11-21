@@ -9,11 +9,13 @@ import { separateMidiTracks } from './midi.js'
 import { sourceTitle, safeFileName, unknownTitle } from './title.js'
 import {storeGeometry,inspectGeometry} from './geometry-report.js'
 import {staffY} from './structure.js'
+import {normalizeTies,collectTiePairs,inspectTies,tieCandidates} from './ties.js'
+import {exportForMuseScore} from './musescore.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
 const query = new URLSearchParams(location.search)
-const worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
+let worker = new Worker(new URL('./omr.worker.js', import.meta.url), { type: 'module' })
 const geometryWorker = new Worker(new URL('./structure.worker.js', import.meta.url), {type:'module'})
 let geometryRequest=0
 const geometryRequests=new Map()
@@ -29,22 +31,36 @@ async function ensureGeometry() {
 }
 // Browsers without WebAssembly JSPI (Safari before 27) need the networks in a worker of
 // their own, see omr.worker.js. ?nojspi forces that way, to test it in other browsers.
-let bridgePort = null
+let bridgePort = null,ortBridgeWorker=null,recognitionMode=null
+function prepareBridge() {
 if (typeof WebAssembly.Suspending !== 'function' || query.has('nojspi')) {
   const channel = new MessageChannel()
-  new Worker(new URL('./ort.worker.js', import.meta.url), { type: 'module' }).postMessage({ port: channel.port1 }, [channel.port1])
+  ortBridgeWorker=new Worker(new URL('./ort.worker.js', import.meta.url), { type: 'module' });ortBridgeWorker.postMessage({ port: channel.port1 }, [channel.port1])
   bridgePort = channel.port2
+}
+}
+prepareBridge()
+const backendState={}
+function configureRecognizer(mode) {
+  if(recognitionMode!==null&&recognitionMode!==mode) {
+    const handler=worker.onmessage,error=worker.onerror
+    worker.terminate();ortBridgeWorker?.terminate();bridgePort=null
+    worker=new Worker(new URL('./omr.worker.js',import.meta.url),{type:'module'})
+    worker.onmessage=handler;worker.onerror=error;prepareBridge()
+    for(const key of Object.keys(backendState)) delete backendState[key]
+  }
+  recognitionMode=mode
 }
 const player = new Player()
 const SETTINGS_KEY = 'score-to-midi.settings.v1'
 const DRAFT_KEY = 'score-to-midi.draft.v1'
 try {
   const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
-  for (const id of ['page-from','page-to','layout']) if (settings[id] != null) $(id).value = settings[id]
+  for (const id of ['page-from','page-to','layout','hardware']) if (settings[id] != null) $(id).value = settings[id]
   $('resume').hidden = !localStorage.getItem(DRAFT_KEY)
 } catch {}
-for (const id of ['page-from','page-to','layout']) $(id).addEventListener('change', () => {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.fromEntries(['page-from','page-to','layout'].map(id => [id,$(id).value])))) } catch {}
+for (const id of ['page-from','page-to','layout','hardware']) $(id).addEventListener('change', () => {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.fromEntries(['page-from','page-to','layout','hardware'].map(id => [id,$(id).value])))) } catch {}
 })
 
 let pages = [] // the scanned pages: {png, url, width, height, text}
@@ -89,7 +105,8 @@ async function scan(files) {
   readText() // OCR runs beside the recognition
   // Copies go to the worker; the originals stay here for the side-by-side view.
   started = performance.now()
-  worker.postMessage({ pages: pages.map((p) => p.png), layout: $('layout').value, port: bridgePort }, bridgePort ? [bridgePort] : [])
+  configureRecognizer($('hardware').value)
+  worker.postMessage({ pages: pages.map((p) => p.png), layout: $('layout').value,mode:$('hardware').value, port: bridgePort }, bridgePort ? [bridgePort] : [])
   bridgePort = null // handed over with the first scan
 }
 
@@ -118,7 +135,13 @@ const DETAILS = [
 ]
 
 worker.onmessage = async ({ data }) => {
-  if (data.type === 'status') {
+  if(data.type==='backend') {
+    const labels={webnn:'NPU要求＋CPU補助',webgpu:'GPU＋CPU補助',wasm:'CPU'}
+    if(data.stage==='capabilities') backendState.capabilities=`GPU API: ${data.gpu?'利用可能':'利用不可'} / NPU API: ${data.npu?'公開あり':'ブラウザー未対応'}`
+    if(data.model) backendState[data.model]=`${data.model}: ${labels[data.backend]||data.backend}${data.stage==='loading'?' 初期化中':data.stage==='fallback'?' 利用できず切替中':''}`
+    const text=[backendState.capabilities,...['segnet','encoder','decoder'].map(key=>backendState[key])].filter(Boolean).join(' / ')
+    $('hardware-status').textContent=text;$('backend-status').textContent=text
+  } else if (data.type === 'status') {
     progress(data.text, data.done, data.total)
     if (/Reading page/.test(data.text)) {
       reading = { page: data.done, pages: data.total, staves: 1 }
@@ -167,6 +190,17 @@ async function open(xml, recognize = true) {
     score.title = score.title.trim() || sourceTitle(inputName) || unknownTitle()
     $('title-status').textContent = '保存名は曲名欄で確認・変更できます。'
   }
+  normalizeTies(score.doc)
+  if(recognize&&pages.length) {
+    progress('タイの曲線候補を照合中…')
+    const pairs=collectTiePairs(score.doc).filter(p=>!p.a.tied&&p.a.page!==null&&p.a.page===p.b.page&&p.a.x<p.b.x&&!/drum|打楽器/i.test([...score.doc.querySelectorAll('score-part')].find(part=>part.id===p.a.part)?.querySelector('part-name')?.textContent||''))
+    const candidates=[]
+    for(const [page,image] of pages.entries()) {
+      if(!image.structure?.staves?.length) continue
+      try {candidates.push(...await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,operation:'ties',png:image.png,structure:image.structure,page,pairs:pairs.filter(p=>p.a.page===page)})}))}catch{}
+    }
+    tieCandidates(score.doc,candidates)
+  }
   routeParts(score.doc)
   $('title').value = score.title
   updateSaveName()
@@ -207,7 +241,7 @@ function renderParts() {
     const commit = async (program = part.program) => {
       if (!Number.isInteger(Number(transpose.value)) || Number(transpose.value) < -36 || Number(transpose.value) > 36) { $('save-status').textContent = '移調は−36〜36の整数で指定してください。'; return }
       part.program = program
-      player.stop(); score.configurePart(part.id, {name:name.value,program,transpose:Number(transpose.value)}); await draw()
+      player.stop(); score.configurePart(part.id, {name:name.value,program,transpose:Number(transpose.value),instrumentId:instrument.value}); await draw()
     }
     name.onchange = () => commit()
     transpose.onchange = () => commit()
@@ -264,6 +298,7 @@ async function draw() {
   const unread = score.doc.querySelector('miscellaneous-field[name="unread-pages"]')?.textContent
   if (unread) $('quality').textContent += ` 認識できなかったページ（選択範囲内の順番）: ${unread}。出力には含まれていません。`
   drawGeometry()
+  drawTies()
   const pane = $('score')
   const scroll = pane.scrollTop
   const svgs = await score.render(Math.max(pane.clientWidth - 28, 320))
@@ -304,6 +339,7 @@ function drawGeometry() {
       for(const x of staff.inferredBars||[]) shape('line',{x1:x,x2:x,y1:staffY(staff,x,0),y2:staffY(staff,x,4),class:'bar-inferred'},'他パートとの一致から補った境界候補')
     }
     const wrong=new Set(geometryReport.warnings.flatMap(w=>w.ids||[]))
+    for(const arc of tieCandidates(score.doc).filter(arc=>arc.page===index)) shape('path',{d:`M ${arc.x1} ${arc.y1} Q ${arc.controlX} ${arc.controlY} ${arc.x2} ${arc.y2}`,class:'tie-arc-candidate'},'タイの画像候補（未確定）')
     for(const symbol of geometryReport.symbols.filter(s=>s.page===index)) {
       const staff=structures[index]?.staves.find(s=>s.id===symbol.staff),radius=(staff?.spacing||8)*.7
       shape('circle',{cx:symbol.x,cy:symbol.y,r:radius,class:wrong.has(symbol.id)?'symbol-mismatch':symbol.kind==='rest'?'rest-anchor':'note-anchor'},`${symbol.kind==='rest'?'休符':'音符'} ${symbol.type||''}／五線${symbol.staff??'?'} 小節${symbol.measure??'?'} (${symbol.x},${symbol.y})`)
@@ -312,6 +348,19 @@ function drawGeometry() {
   })
 }
 $('toggle-structure').onclick=()=>{const visible=document.body.classList.toggle('show-structure');$('toggle-structure').setAttribute('aria-pressed',String(visible))}
+
+function drawTies() {
+  const report=inspectTies(score.doc)
+  $('tie-summary').textContent=`タイ ${report.pairs}組 / スラー ${report.slurs}本。`+(report.warnings.length?`タイの接続に${report.warnings.length}件の確認候補があります。`:'')+' MuseScoreで記号を保持するには「MuseScore用MusicXML」を開いてください。MIDIは発音の長さを保持しますが、スラーや元のタイの書き方は保持しません。'
+  $('tie-candidates').replaceChildren(...tieCandidates(score.doc).filter(arc=>!score.note(arc.startId)?.querySelector('tie[type="start"]')).map((arc,index)=>{
+    const li=document.createElement('li'),button=document.createElement('button'),preview=document.createElement('button')
+    preview.textContent=`曲線候補 ${index+1} を原稿で表示`
+    preview.onclick=()=>{select(arc.startId,true);document.body.classList.add('show-structure');$('toggle-structure').setAttribute('aria-pressed','true')}
+    button.textContent='確認してタイにする'
+    button.onclick=async()=>{player.stop();if(score.connectTie(arc.startId,arc.endId)) await draw()}
+    li.append(preview,button);return li
+  }))
+}
 
 function select(id, reveal = false) {
   const pane = $('score')
@@ -360,7 +409,7 @@ async function edit(action, arg) {
     const added = score.add(selected)
     if (!added) return
     selected = added
-  } else if (!score[action](selected, arg)) return
+  } else if (!score[action](selected, arg)) {if(action==='tie')$('hint').textContent='同じ声部で連続する同じ高さの音符を選択してください。';return}
   await draw()
   if (action === 'undo' || action === 'redo') renderParts()
   const sounding = player.notes.find((n) => n.id === selected)
@@ -388,6 +437,7 @@ const KEYS = {
   ArrowRight: () => step(1),
   '+': () => edit('alter', 1), '=': () => edit('alter', 1), '-': () => edit('alter', -1), n: () => edit('alter', 0),
   '.': () => edit('dot'), r: () => edit('rest'), a: () => edit('add'),
+  t: () => edit('tie'),
   Delete: () => edit('remove'), Backspace: () => edit('remove'),
   ' ': () => togglePlay(),
   z: (e) => e.ctrlKey || e.metaKey ? edit(e.shiftKey ? 'redo' : 'undo') : false,
@@ -443,7 +493,7 @@ const fileName = () => safeFileName(score.title) || unnamedFileName
 function updateSaveName() {
   $('save-name').textContent = `保存名: ${fileName()}.mid / ${fileName()}.musicxml`
 }
-$('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', score.xml)
+$('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', exportForMuseScore(score.doc))
 $('save-analysis').onclick=()=>download(`${fileName()}_解析.json`,'application/json',JSON.stringify(geometryReport,null,2))
 $('save-midi').onclick = () => {
   try { download(`${fileName()}.mid`, 'audio/midi', separateMidiTracks(Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))) }

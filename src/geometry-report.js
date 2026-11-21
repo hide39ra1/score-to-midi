@@ -46,7 +46,7 @@ export function inspectGeometry(doc,structures=readGeometry(doc)) {
         const location=locateSymbol(structure,x,y)
         const symbol={id:note.id,part:part.id,page,x,y,kind:note.querySelector(':scope > rest')?'rest':'note',type:note.querySelector(':scope > type')?.textContent||null,
           pitch:note.querySelector(':scope > pitch')?{step:note.querySelector('pitch > step')?.textContent,alter:Number(note.querySelector('pitch > alter')?.textContent||0),octave:Number(note.querySelector('pitch > octave')?.textContent)}:null,
-          onset:starts[elements.indexOf(note)],divisions,duration:Number(note.querySelector(':scope > duration')?.textContent||0),voice:note.querySelector(':scope > voice')?.textContent||'1',chord:!!note.querySelector(':scope > chord'),xmlMeasure:measure.getAttribute('number'),measureIndex,...location}
+          onset:starts[elements.indexOf(note)],divisions,duration:Number(note.querySelector(':scope > duration')?.textContent||0),voice:note.querySelector(':scope > voice')?.textContent||'1',chord:!!note.querySelector(':scope > chord'),tieStart:!!note.querySelector('tie[type="start"]'),tieStop:!!note.querySelector('tie[type="stop"]'),xmlMeasure:measure.getAttribute('number'),measureIndex,...location}
         symbols.push(symbol)
         if(!location) continue
         const key=`${part.id}/${page}/${location.system}`

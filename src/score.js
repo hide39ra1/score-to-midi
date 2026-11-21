@@ -2,6 +2,7 @@
 import createVerovioModule from 'verovio/wasm'
 import { VerovioToolkit } from 'verovio/esm'
 import { applyPartSettings } from './instruments.js'
+import {collectTiePairs,setTie} from './ties.js'
 
 const STEPS = 'CDEFGAB'
 const SHARPS = 'FCGDAEB' // order in which key signatures add sharps; flats are the reverse
@@ -106,6 +107,7 @@ export class Score {
   constructor(xml) {
     this.doc = new DOMParser().parseFromString(xml, 'application/xml')
     if (this.doc.querySelector('parsererror') || this.doc.documentElement.tagName !== 'score-partwise') throw new Error('対応するMusicXML（score-partwise）ではありません。')
+    this.doc.querySelectorAll('note').forEach((note,index)=>{if(!note.id)note.id=`imported-note-${index+1}`})
     this.doc.querySelectorAll('measure').forEach(spell)
     this.done = []
     this.undone = []
@@ -122,6 +124,15 @@ export class Score {
 
   configurePart(id, settings) {
     return this.#change(() => applyPartSettings(this.doc, id, settings))
+  }
+  tie(id) {
+    const pair=collectTiePairs(this.doc).find(pair=>pair.a.id===id)
+    if(!pair) return false
+    return this.#change(()=>setTie(this.doc,id,pair.b.id,!pair.a.tied))
+  }
+  connectTie(startId,endId) {
+    if(!collectTiePairs(this.doc).some(pair=>pair.a.id===startId&&pair.b.id===endId)) return false
+    return this.#change(()=>setTie(this.doc,startId,endId,true))
   }
 
   /** Run a change to the document; it may return false for "does not apply". */
