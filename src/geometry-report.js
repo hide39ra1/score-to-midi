@@ -31,7 +31,7 @@ export function staffLayout(doc) {
   return Array.from({length:Math.max(original.length,geometry.length)},(_,i)=>geometry[i]?.staves?.length ? geometry[i].staves.map(s=>[s.left,staffY(s,s.left,0),s.right,staffY(s,s.left,4),s.system]) : original[i]||[])
 }
 export function inspectGeometry(doc,structures=readGeometry(doc)) {
-  const symbols=[],warnings=[],byPart=new Map(),observed=new Map()
+  const symbols=[],warnings=[]
   let repeats=[]
   try {repeats=JSON.parse(doc.querySelector('miscellaneous-field[name="percussion-analysis-v1"]')?.textContent||'{}').repeats||[]}catch{}
   for(const part of doc.querySelectorAll('score-partwise > part')) {
@@ -50,32 +50,54 @@ export function inspectGeometry(doc,structures=readGeometry(doc)) {
           pitch:note.querySelector(':scope > pitch')?{step:note.querySelector('pitch > step')?.textContent,alter:Number(note.querySelector('pitch > alter')?.textContent||0),octave:Number(note.querySelector('pitch > octave')?.textContent)}:null,
           onset:starts[elements.indexOf(note)],divisions,duration:Number(note.querySelector(':scope > duration')?.textContent||0),voice:note.querySelector(':scope > voice')?.textContent||'1',chord:!!note.querySelector(':scope > chord'),tieStart:!!note.querySelector('tie[type="start"]'),tieStop:!!note.querySelector('tie[type="stop"]'),xmlMeasure:measure.getAttribute('number'),measureIndex,...location}
         symbols.push(symbol)
-        if(!location) continue
-        const key=`${part.id}/${page}/${location.system}`
-        if(!byPart.has(key)) byPart.set(key,[])
-        byPart.get(key).push(symbol)
-        if(!location.ambiguous) observed.set(`${page}/${location.staff}`,true)
+
       }
     }
   }
+  // A recognized full-measure rest need not have a usable image anchor.
+  // Explicit page ranges distinguish it from an actually missing measure.
+  const pageCoverage=[]
+  let ranges=[]
+  try{ranges=JSON.parse(doc.querySelector('miscellaneous-field[name="page-measures-v1"]')?.textContent||'[]')}catch{}
+  for(const part of doc.querySelectorAll('score-partwise > part'))for(const range of ranges){
+    const measures=[...part.querySelectorAll(':scope > measure')].slice(range.start,range.start+range.count)
+    const count=measures.filter(m=>!m.querySelector('note[id^="recognition-gap-"],note[id^="unread-"]')).length
+    pageCoverage.push({part:part.id,page:range.page,count})
+  }
+  warnings.push(...auditGeometry(symbols,structures,repeats,pageCoverage))
+  symbols.sort((a,b)=>a.page-b.page||(a.system??0)-(b.system??0)||(a.measure??0)-(b.measure??0)||a.x-b.x||a.y-b.y)
+  const metadata=name=>{try{return JSON.parse(doc.querySelector(`miscellaneous-field[name="${name}"]`)?.textContent||'[]')}catch{return []}}
+  const revision=metadata('recognition-version')
+  const percussion=metadata('percussion-analysis-v1')
+  return {version:1,source:'image-geometry + homr symbol anchors',recognitionVersion:typeof revision==='string'?revision:'legacy',structures,symbols,warnings,pageCoverage,boundaryRepairs:metadata('boundary-repair-v1'),recognitionReview:metadata('recognition-review-v1'),staffRecovery:metadata('staff-recovery-v1'),pageAlignment:metadata('page-alignment-v1'),percussion:!Array.isArray(percussion)?percussion:{lanes:[],repeats:[],warnings:[]}}
+}
+
+// Re-audit existing symbol coordinates against revised geometry without invoking
+// neural recognition or changing any notes. Also used for regression reports.
+export function auditGeometry(symbols,structures,repeats=[],pageCoverage=[]) {
+  const warnings=[],byPart=new Map(),observed=new Map()
+  for(const symbol of symbols){
+    if(symbol.staff==null)continue
+    const key=`${symbol.part}/${symbol.page}/${symbol.system}`
+    if(!byPart.has(key))byPart.set(key,[])
+    byPart.get(key).push(symbol)
+    if(!symbol.ambiguous)observed.set(`${symbol.page}/${symbol.staff}`,true)
+  }
   for(const entries of byPart.values()) {
+    const sourcePage=structures[entries[0].page]?.sourcePage||entries[0].page+1
     const reliable=entries.filter(s=>!s.nearBar&&!s.ambiguous)
     if(!reliable.length) continue
     const offsets=new Map()
     for(const s of reliable) {const offset=s.measureIndex-s.measure;offsets.set(offset,(offsets.get(offset)||0)+1)}
     const offset=[...offsets].sort((a,b)=>b[1]-a[1])[0][0]
     const wrong=reliable.filter(s=>s.measureIndex-s.measure!==offset)
-    if(wrong.length) warnings.push({kind:'measure-position',part:entries[0].part,page:entries[0].page,ids:wrong.map(s=>s.id),message:`${entries[0].part}：画像の小節位置と認識結果が${wrong.length}記号で一致しません`})
+    if(wrong.length) warnings.push({kind:'measure-position',part:entries[0].part,page:entries[0].page,ids:wrong.map(s=>s.id),message:`原稿${sourcePage}ページ ${entries[0].part}：画像の小節位置と認識結果が${wrong.length}記号で一致しません`})
     const expected=Math.max(...entries.map(s=>allStaves(structures[s.page]).find(staff=>staff.id===s.staff)?.measureCount||0))
-    const count=new Set([...entries.map(s=>s.measureIndex),...repeats.filter(r=>r.part===entries[0].part&&r.page===entries[0].page).map(r=>r.index)]).size
-    if(count!==expected) warnings.push({kind:'measure-count',part:entries[0].part,page:entries[0].page,message:`${entries[0].part}：画像${expected}小節／認識${count}小節（部分小節・誤検出を含む確認候補）`})
+    const count=pageCoverage.find(c=>c.part===entries[0].part&&c.page===entries[0].page)?.count??new Set([...entries.map(s=>s.measureIndex),...repeats.filter(r=>r.part===entries[0].part&&r.page===entries[0].page).map(r=>r.index)]).size
+    if(count!==expected) warnings.push({kind:'measure-count',part:entries[0].part,page:entries[0].page,message:`原稿${sourcePage}ページ ${entries[0].part}：画像${expected}小節／認識${count}小節（部分小節・誤検出を含む確認候補）`})
   }
   structures.forEach((structure,page)=>{
-    for(const staff of allStaves(structure)) if(!observed.has(`${page}/${staff.id}`)) warnings.push({kind:'unread-staff',page,sourcePage:structure.sourcePage||page+1,staff:staff.id,message:`原稿${structure.sourcePage||page+1}ページの第${staff.id}${staff.lineCount===1?'一線譜':'五線'}に対応する音符・休符がありません`})
+    for(const staff of allStaves(structure)) if(!observed.has(`${page}/${staff.id}`)&&!repeats.some(r=>r.page===page&&r.staff===staff.id)) warnings.push({kind:'unread-staff',page,sourcePage:structure.sourcePage||page+1,staff:staff.id,message:`原稿${structure.sourcePage||page+1}ページの第${staff.id}${staff.lineCount===1?'一線譜':'五線'}に対応する音符・休符がありません`})
   })
-  symbols.sort((a,b)=>a.page-b.page||(a.system??0)-(b.system??0)||(a.measure??0)-(b.measure??0)||a.x-b.x||a.y-b.y)
-  const metadata=name=>{try{return JSON.parse(doc.querySelector(`miscellaneous-field[name="${name}"]`)?.textContent||'[]')}catch{return []}}
-  const revision=metadata('recognition-version')
-  const percussion=metadata('percussion-analysis-v1')
-  return {version:1,source:'image-geometry + homr symbol anchors',recognitionVersion:typeof revision==='string'?revision:'legacy',structures,symbols,warnings,recognitionReview:metadata('recognition-review-v1'),staffRecovery:metadata('staff-recovery-v1'),pageAlignment:metadata('page-alignment-v1'),percussion:!Array.isArray(percussion)?percussion:{lanes:[],repeats:[],warnings:[]}}
+  return warnings
 }

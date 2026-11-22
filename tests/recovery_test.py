@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 source = ast.parse(Path('src/py/pipeline.py').read_text(encoding='utf-8'))
-helpers = [node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in {'_match_noteheads', '_recover_missing_staffs','_align_part_slots','_merge_full_score_pages'}]
+helpers = [node for node in source.body if isinstance(node, ast.FunctionDef) and node.name in {'_match_noteheads', '_fold_boundary_only_measures', '_recover_missing_staffs','_align_part_slots','_merge_full_score_pages'}]
 scope = {}
 exec(compile(ast.Module(body=helpers, type_ignores=[]), 'pipeline-helpers', 'exec'), scope)
 
@@ -35,6 +35,20 @@ class RecoveryTests(unittest.TestCase):
         self.assertIsNone(parts[1].findall('measure')[1].find('.//pitch'))
         self.assertEqual(parts[1].findall('measure')[1].find('note').get('print-object'),'no')
         self.assertIn('認識欠落',parts[1].findall('measure')[1].findtext('.//words'))
+        ranges=json.loads(merged.find("identification/miscellaneous/miscellaneous-field[@name='page-measures-v1']").text)
+        self.assertEqual(ranges,[{'page':0,'start':0,'count':1},{'page':1,'start':1,'count':1}])
+
+    def test_boundary_only_phantom_measure_preserves_ending_and_repeat(self):
+        scope.update(ET=ET)
+        root=ET.fromstring('<score-partwise><part id="P1"><measure number="1"><note id="a"><rest/><duration>4</duration></note><barline location="right"><repeat direction="backward"/></barline></measure><measure number="2"><barline location="right"><ending type="stop" number="1"/></barline></measure><measure number="3"><note id="b"><rest/><duration>4</duration></note></measure></part></score-partwise>')
+        result=scope['_fold_boundary_only_measures'](root,{'staves':[{'measureCount':2}]})
+        self.assertEqual(len(result),1)
+        self.assertEqual([n.get('id') for n in root.iter('note')],['a','b'])
+        self.assertEqual(len(root.findall('part/measure')),2)
+        self.assertEqual([c.tag for c in root.find('part/measure/barline')],['ending','repeat'])
+        self.assertEqual(root.findall('part/measure')[1].get('number'),'2')
+        # An actual rest measure must never be erased to fit a count.
+        self.assertEqual(scope['_fold_boundary_only_measures'](root,{'staves':[{'measureCount':1}]}),[])
 
     def test_coordinates_snap_to_unique_heads_without_changing_notes(self):
         match = scope['_match_noteheads']
@@ -79,6 +93,22 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result[0]['firstMeasureFit'],1)
         self.assertEqual(result[0]['addedNotes'],0)
         self.assertEqual(len(root.findall('part')),1)
+        # Later bars can drift even when the first bar fits perfectly.
+        def three_bars(xs):
+            root=xml(50);part=root.find('part');part.remove(part.find('measure'))
+            for i,x in enumerate(xs):
+                measure=ET.SubElement(part,'measure',number=str(i+1))
+                note=ET.SubElement(measure,'note',id=f'n{i}-p0-{x}-50')
+                pitch=ET.SubElement(note,'pitch');ET.SubElement(pitch,'step').text='C'
+                ET.SubElement(pitch,'octave').text='4';ET.SubElement(note,'duration').text='1'
+            return root
+        current.update(right=350,boundaries=[10,150,250,350],measureCount=3)
+        scope['_read_page']=lambda *args:(three_bars([100,200,300]),[[10,30,350,70,0]])
+        root=three_bars([100,230,230])
+        result=scope['_recover_missing_staffs'](root,[[10,30,350,70,0]],'input',{'staves':[current]})
+        self.assertTrue(result[0]['replaced'])
+        self.assertEqual(result[0]['measureFit'],1)
+
 
 
 if __name__ == '__main__':

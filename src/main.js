@@ -350,7 +350,7 @@ async function draw() {
 
 function drawGeometry() {
   geometryReport=inspectGeometry(score.doc)
-  if(geometryReport.recognitionVersion==='legacy'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
+  if(geometryReport.recognitionVersion!=='2026-11-23-bar-grid-5'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
   if(geometryReport.pageAlignment.length)$('quality').textContent+=` ページ間のパート対応に${geometryReport.pageAlignment.length}件の欠落・未割当てがあります。空欄と原稿を確認してください。`
   if(geometryReport.warnings.length) $('quality').textContent+=` 五線・小節の構造照合で${geometryReport.warnings.length}件の確認候補があります。`
   const structures=geometryReport.structures
@@ -362,10 +362,11 @@ function drawGeometry() {
   if(failed) $('geometry-summary').textContent+=` ${failed}ページで構造解析に失敗しています。`
   if(singleCount)$('geometry-summary').textContent+=` 打楽器の一線譜${singleCount}段を検出。小節反復${geometryReport.percussion.repeats.length}箇所を前小節の音符へ展開しました。`
   if(geometryReport.percussion.warnings.length)$('quality').textContent+=` 打楽器に${geometryReport.percussion.warnings.length}件の確認候補があります。`
+  if(geometryReport.boundaryRepairs.length)$('quality').textContent+=` 括弧・反復記号だけの余分な小節を${geometryReport.boundaryRepairs.length}箇所修正しました。`
   const recovered=geometryReport.staffRecovery.filter(item=>item.notes),matched=geometryReport.recognitionReview.reduce((n,item)=>n+(item.matched||0),0)
   const retriesFailed=geometryReport.staffRecovery.filter(item=>item.error).length
   if(retriesFailed)$('quality').textContent+=` 再試行で改善を確認できない五線が${retriesFailed}組あります。`
-  if(recovered.length)$('quality').textContent+=` 五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+(item.addedNotes??item.notes),0)}音符を追加しました。先頭小節の不整合も再試行の対象です。`
+  if(recovered.length)$('quality').textContent+=` 五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+(item.addedNotes??item.notes),0)}音符を追加しました。途中の小節位置・小節数の不整合も再試行の対象です。`
   if(matched)$('geometry-summary').textContent+=` ${matched}音符の推定位置を符頭検出と対応付けて補正しました。丸印は認識結果の位置であり、音高・音価が正しいという判定ではありません。`
   $('geometry-warnings').replaceChildren(...[...geometryReport.warnings.map(w=>w.message),...geometryReport.percussion.warnings].map(message=>{const li=document.createElement('li');li.textContent=message;return li}))
   $('toggle-structure').disabled=!pages.length||!staffCount

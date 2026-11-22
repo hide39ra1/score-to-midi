@@ -1,7 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {analyzeBinary,binarize,locateSymbol,staffY} from '../src/structure.js'
-import {eventStarts} from '../src/geometry-report.js'
+import {analyzeBinary,binarize,locateSymbol,staffY,reconcileBarlines} from '../src/structure.js'
+import {eventStarts,auditGeometry} from '../src/geometry-report.js'
 
 function fixture({slope=0,broken=false}={}) {
   const width=640,height=320,ink=new Uint8Array(width*height)
@@ -67,4 +67,36 @@ test('analysis at reduced resolution maps anchors back to original pixels',()=>{
   const symbol=locateSymbol(result,540,170)
   assert.equal(symbol.measure,2)
   assert.equal(symbol.staffStep,3)
+})
+
+
+test('separated strokes of a double bar share one boundary across all staffs',()=>{
+  const staves=Array.from({length:4},(_,i)=>({id:i+1,system:0,left:20,right:700,spacing:8,bars:[{x:220},{x:i%2?403:397},{x:403},{x:550}]}))
+  reconcileBarlines(staves)
+  assert.ok(staves.every(s=>s.measureCount===4))
+  assert.ok(staves.every(s=>s.boundaries[2]>=397&&s.boundaries[2]<=403))
+})
+
+test('a terminal courtesy key area is not a tiny extra measure',()=>{
+  const staves=Array.from({length:3},(_,i)=>({id:i+1,system:0,left:20,right:700,spacing:8,bars:[{x:220},{x:400},{x:671}]}))
+  reconcileBarlines(staves)
+  assert.deepEqual(staves[0].boundaries,[20,220,400,700])
+})
+
+test('a thick bar continued through staff gaps survives notehead rejection',()=>{
+  const image=fixture()
+  for(let x=222;x<=228;x++)for(let y=45;y<240;y++)image.ink[y*image.width+x]=1
+  const result=analyzeBinary(image,{fullScore:true})
+  assert.equal(result.staves[0].measureCount,3)
+  assert.ok(result.staves[0].boundaries.some(x=>Math.abs(x-225)<3))
+})
+
+test('unanchored recognized rests count, while repeats do not mark a staff unread',()=>{
+  const structures=[{sourcePage:6,staves:[{id:1,system:0,measureCount:2}],percussionStaves:[{id:2,system:0,measureCount:2}]}]
+  const symbols=[{id:'n1',part:'P1',page:0,system:0,staff:1,measure:1,measureIndex:0}]
+  const report=auditGeometry(symbols,structures,[{part:'P2',page:0,staff:2,index:1}],[{part:'P1',page:0,count:2}])
+  assert.deepEqual(report,[])
+  const missing=auditGeometry(symbols,structures,[],[{part:'P1',page:0,count:1}])
+  assert.ok(missing.find(w=>w.kind==='measure-count').message.includes('原稿6ページ'))
+  assert.ok(missing.some(w=>w.kind==='unread-staff'&&w.staff===2))
 })

@@ -369,6 +369,45 @@ def _give_every_staff_a_clef(score):
                 first.insert(list(first).index(last[-1]) + 1 if last else len(first), copy)
 
 
+def _fold_boundary_only_measures(xml, structure):
+    """Move an ending/repeat-only phantom measure onto its actual boundary.
+
+    No note, rest, duration or attribute is deleted. Only act when independent
+    geometry confirms that the recognizer created too many measures.
+    """
+    counts=[s.get('measureCount',0) for s in structure.get('staves',[])]
+    expected=max(set(counts),key=counts.count) if counts else 0
+    repairs=[]
+    if expected<1:return repairs
+    for part in xml.findall('part'):
+        for measure in list(part.findall('measure')):
+            measures=part.findall('measure')
+            if len(measures)<=expected:break
+            children=list(measure)
+            if not children or any(c.tag!='barline' for c in children):continue
+            if not any(c.find('ending') is not None or c.find('repeat') is not None for c in children):continue
+            index=measures.index(measure);plans=[]
+            for barline in children:
+                location=barline.get('location','right')
+                target_index=index+1 if location=='left' else index-1
+                if location not in {'left','right'} or not 0<=target_index<len(measures):break
+                target=measures[target_index]
+                existing=next((b for b in target.findall('barline') if b.get('location','right')==location),None)
+                if existing is not None and any(existing.find(c.tag) is not None for c in barline):break
+                plans.append((barline,target,existing))
+            if len(plans)!=len(children):continue
+            for barline,target,existing in plans:
+                if existing is None:target.append(ET.fromstring(ET.tostring(barline)))
+                else:
+                    for item in barline:existing.append(ET.fromstring(ET.tostring(item)))
+                    order=['bar-style','footnote','level','wavy-line','segno','coda','fermata','ending','repeat']
+                    existing[:]=sorted(existing,key=lambda c:order.index(c.tag) if c.tag in order else len(order))
+            repairs.append({'part':part.get('id'),'removedMeasure':measure.get('number'),'kind':'boundary-only'})
+            part.remove(measure)
+        for number,measure in enumerate(part.findall('measure'),1):measure.set('number',str(number))
+    return repairs
+
+
 def _recover_missing_staffs(xml, boxes, path, structure):
     """Retry only independently detected missing staves in an explicit full score."""
     staves = sorted(structure.get("staves", []), key=lambda staff: staff["top"])
@@ -379,6 +418,18 @@ def _recover_missing_staffs(xml, boxes, path, structure):
     def coordinates(part, first=False, pitched=True):
         parent=part.find("measure") if first else part
         return [(int(m[2]),int(m[3])) for note in parent.iter("note") if (not pitched or note.find("pitch") is not None) and (m:=re.search(r"-p(\d+)-(\d+)-(\d+)$",note.get("id","")))]
+    def measure_fit(part, staff):
+        bounds=staff.get('boundaries',[])
+        if len(bounds)<2:return None
+        matched=total=0
+        tolerance=staff['spacing']*1.5
+        for index,measure in enumerate(part.findall('measure')):
+            for note in measure.iter('note'):
+                match=re.search(r'-p(\d+)-(\d+)-(\d+)$',note.get('id',''))
+                if match is None:continue
+                x=int(match[2]);total+=1
+                if index+1<len(bounds) and bounds[index]-tolerance<=x<=bounds[index+1]+tolerance:matched+=1
+        return matched/total if total else None
     def first_fit(part, staff):
         points=coordinates(part,True);bounds=staff.get("boundaries",[])
         if not points or len(bounds)<2:return None
@@ -387,7 +438,7 @@ def _recover_missing_staffs(xml, boxes, path, structure):
     for index, staff in enumerate(staves):
         center = (staff["top"]+staff["bottom"])/2
         covered=any(abs((box[1]+box[3])/2-center) < staff["spacing"]*2 for box in boxes)
-        existing=None;fit=None
+        existing=None;fit=None;whole_fit=None
         if covered:
             has_part=False
             for candidate in xml.findall('part'):
@@ -400,7 +451,11 @@ def _recover_missing_staffs(xml, boxes, path, structure):
                     has_part=True
                     if count!=1:continue
                     fit=first_fit(candidate,staff)
-                    if fit is not None and fit<.66:existing=candidate;break
+                    whole_fit=measure_fit(candidate,staff)
+                    expected=staff.get('measureCount',len(staff.get('boundaries',[]))-1)
+                    inconsistent=expected>0 and len(candidate.findall('measure'))!=expected
+                    if (fit is not None and fit<.66) or (whole_fit is not None and (whole_fit<.85 or inconsistent)):
+                        existing=candidate;break
             if existing is None and has_part:continue
         left = max(0, int(staff["left"]-staff["spacing"]*3))
         right = min(original.shape[1], int(staff["right"]+staff["spacing"]*2))
@@ -423,8 +478,10 @@ def _recover_missing_staffs(xml, boxes, path, structure):
                 if match:
                     note.set("id", note.get("id")[:match.start()]+f"-p{_page}-{int(match[2])+left}-{int(match[3])+top}")
             retry_fit=first_fit(part,staff)
-            if existing is not None and (retry_fit is None or retry_fit<=fit):
-                recovered.append({"staff":staff['id'],"error":"先頭小節の位置整合が改善しなかったため再認識結果を採用しませんでした"})
+            retry_whole_fit=measure_fit(part,staff)
+            improved=(retry_whole_fit is not None and whole_fit is not None and retry_whole_fit>whole_fit+.01) or (retry_fit is not None and fit is not None and retry_fit>fit+.01 and (whole_fit is None or retry_whole_fit is None or retry_whole_fit>=whole_fit))
+            if existing is not None and not improved:
+                recovered.append({"staff":staff['id'],"error":"小節の位置整合が改善しなかったため再認識結果を採用しませんでした"})
                 continue
             meta = retry.find("part-list/score-part")
             old_notes=0
@@ -435,7 +492,7 @@ def _recover_missing_staffs(xml, boxes, path, structure):
             xml.find("part-list").append(meta)
             xml.append(part)
             if not covered:boxes.extend([[b[0]+left,b[1]+top,b[2]+left,b[3]+top,0] for b in retry_boxes])
-            recovered.append({"staff": staff["id"], "notes": len(part.findall(".//pitch")), "addedNotes":max(0,len(part.findall('.//pitch'))-old_notes),"replaced":existing is not None,"firstMeasureFit":retry_fit,"measures": len(part.findall("measure"))})
+            recovered.append({"staff": staff["id"], "notes": len(part.findall(".//pitch")), "addedNotes":max(0,len(part.findall('.//pitch'))-old_notes),"replaced":existing is not None,"firstMeasureFit":retry_fit,"measureFit":retry_whole_fit,"measures": len(part.findall("measure"))})
         except Exception as error:
             recovered.append({"staff": staff["id"], "error": str(error)})
         finally:
@@ -495,7 +552,9 @@ def _merge_full_score_pages(records):
             elif closest:center=closest['top']
             out.append(((center-low)/max(1,high-low),count))
         return out
-    merged=ET.fromstring(ET.tostring(records[0][0]));reference=positions(*records[0]);parts=merged.findall('part');report=[]
+    merged=ET.fromstring(ET.tostring(records[0][0]));reference=positions(*records[0]);parts=merged.findall('part');report=[];page_measures=[]
+    def page_index(xml, fallback):
+        return next((int(m[1]) for n in xml.iter('note') if (m:=re.search(r'-p(\d+)-(\d+)-(\d+)$',n.get('id','')))),fallback)
     # Pad page tails before appending the next page, preserving gaps as explicit warnings.
     def pad(part,count):
         divisions,beats,unit=1,4,4
@@ -514,8 +573,10 @@ def _merge_full_score_pages(records):
             ET.SubElement(note,'rest',measure='yes');ET.SubElement(note,'duration').text=str(round(divisions*beats*4/unit));ET.SubElement(note,'type').text='whole'
     first_count=max((len(p.findall('measure')) for p in parts),default=0)
     for part in parts:pad(part,first_count)
+    page_measures.append({'page':page_index(records[0][0],0),'start':0,'count':first_count})
     for page,(xml,geometry) in enumerate(records[1:],1):
         source_parts=xml.findall('part');alignment=_align_part_slots(reference,positions(xml,geometry));count=max((len(p.findall('measure')) for p in source_parts),default=0)
+        page_measures.append({'page':page_index(xml,page),'start':len(parts[0].findall('measure')),'count':count})
         for index,target in enumerate(parts):
             start=len(target.findall('measure'));source_index=alignment.get(index)
             if source_index is None:
@@ -537,6 +598,7 @@ def _merge_full_score_pages(records):
     miscellaneous=identification.find('miscellaneous')
     if miscellaneous is None:miscellaneous=ET.SubElement(identification,'miscellaneous')
     field=ET.SubElement(miscellaneous,'miscellaneous-field',name='page-alignment-v1');field.text=json.dumps(report)
+    ET.SubElement(miscellaneous,'miscellaneous-field',name='page-measures-v1').text=json.dumps(page_measures)
     return merged
 
 
@@ -547,12 +609,13 @@ def scan(paths, progress=lambda done, total: None, full_score=False, geometry="[
     structures = json.loads(geometry)
     _recognition_review.clear()
     with tempfile.TemporaryDirectory() as tmp:
-        xmls, layout, skipped, recovery, records = [], [[] for _ in paths], [], [], []
+        xmls, layout, skipped, recovery, records, boundary_repairs = [], [[] for _ in paths], [], [], [], []
         for _page, path in enumerate(paths):
             progress(_page, len(paths))
             try:
                 xml, layout[_page] = _read_page(path, full_score)
                 if full_score and _page < len(structures):
+                    boundary_repairs.extend({"page":_page,**entry} for entry in _fold_boundary_only_measures(xml,structures[_page]))
                     recovery.extend({"page": _page, **entry} for entry in _recover_missing_staffs(xml, layout[_page], path, structures[_page]))
             except Exception as e:  # e.g. a title page: "No staffs found"
                 print(f"page {_page + 1} skipped: {e}", file=sys.stderr)
@@ -573,7 +636,7 @@ def scan(paths, progress=lambda done, total: None, full_score=False, geometry="[
         field = ET.SubElement(miscellaneous, "miscellaneous-field")
         field.set("name", "staff-layout")
         field.text = json.dumps(layout)
-        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery),("recognition-version", "2026-11-22-percussion-4")]:
+        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery),("boundary-repair-v1", boundary_repairs),("recognition-version", "2026-11-23-bar-grid-5")]:
             field = ET.SubElement(miscellaneous,"miscellaneous-field",name=name)
             field.text = json.dumps(value)
         if skipped:

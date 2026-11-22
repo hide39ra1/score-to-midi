@@ -28,11 +28,43 @@ export function binarize({data,width,height},{thresholdFloor=0}={}) {
 export function mergeStaffDetections(primary,secondary) {
   const staves=[...primary.staves]
   for(const staff of secondary.staves) {
-    if(staves.some(s=>staff.top<s.bottom+s.spacing&&staff.bottom>s.top-s.spacing))continue
+    const match=staves.find(s=>staff.top<s.bottom+s.spacing&&staff.bottom>s.top-s.spacing)
+    if(match){for(const bar of staff.bars||[])if(!match.bars.some(b=>Math.abs(b.x-bar.x)<match.spacing*.4))match.bars.push({...bar});continue}
     staves.push({...staff,detection:'light-strokes'})
   }
   staves.sort((a,b)=>a.top-b.top);staves.forEach((staff,i)=>staff.id=i+1)
+  reconcileBarlines(staves)
   return {...primary,staves}
+}
+
+// Build one shared boundary from all strokes of a double bar and all staff
+// observations. Count distinct staffs, never duplicate strokes, as support.
+export function reconcileBarlines(staves) {
+  for(const systemId of new Set(staves.map(s=>s.system))) {
+    const group=staves.filter(s=>s.system===systemId)
+    const spacing=median(group.map(s=>s.spacing)),left=median(group.map(s=>s.left)),right=median(group.map(s=>s.right))
+    const required=group.length>=3?Math.max(2,Math.ceil(group.length*.35)):group.length
+    const clusters=[]
+    for(const item of group.flatMap(staff=>(staff.bars||[]).map(bar=>({staff,bar}))).sort((a,b)=>a.bar.x-b.bar.x)) {
+      const previous=clusters.at(-1)
+      if(previous&&item.bar.x-previous[0].bar.x<=spacing*1.8)previous.push(item)
+      else clusters.push([item])
+    }
+    const grid=[]
+    for(const cluster of clusters){
+      const byStaff=new Map()
+      for(const {staff,bar} of cluster){if(!byStaff.has(staff))byStaff.set(staff,[]);byStaff.get(staff).push(bar.x)}
+      const x=median([...byStaff.values()].map(values=>(Math.min(...values)+Math.max(...values))/2)),support=byStaff.size
+      for(const {bar} of cluster){bar.support=support;bar.confidence=support>=required?.98:.65;bar.accepted=support>=required}
+      if(support>=required&&x>left+spacing*3&&x<right-spacing*5)grid.push(x)
+    }
+    for(const staff of group){
+      staff.boundaries=[Math.max(staff.left,left-spacing),...grid.filter(x=>x>staff.left+spacing&&x<staff.right-spacing),staff.right]
+      staff.measureCount=staff.boundaries.length-1
+      staff.inferredBars=grid.filter(x=>!staff.bars.some(bar=>Math.abs(bar.x-x)<spacing*1.8))
+    }
+  }
+  return staves
 }
 
 export function detectSingleLineStaves({ink,width,height},structure,{scale=1}={}) {
@@ -147,9 +179,18 @@ export function analyzeBinary({ink,width,height}, {fullScore=false, scale=1}={})
         while(b<center+spacing*1.5&&sample(b+1,y)) b++
         if(b-a+1>=spacing*.85) wide++
       }
-      if(total&&count/total>=.88&&longestGap<=Math.max(2,spacing*.4)&&wide<=Math.max(1,spacing*.12)) barColumns.push(x)
+      // A thick/double bar may look as wide as a notehead. Continued ink
+      // above AND below the staff supplies independent evidence of a bar.
+      let extensionAbove=0,extensionBelow=0,extensionTotal=0
+      for(let d=Math.ceil(spacing*.5);d<=spacing*1.5;d++){
+        extensionTotal++
+        if([-1,0,1].some(dx=>sample(x+dx,rows[0]-d)))extensionAbove++
+        if([-1,0,1].some(dx=>sample(x+dx,rows[4]+d)))extensionBelow++
+      }
+      const extended=extensionAbove/extensionTotal>=.8&&extensionBelow/extensionTotal>=.8
+      if(total&&count/total>=.88&&longestGap<=Math.max(2,spacing*.4)&&(wide<=Math.max(1,spacing*.12)||extended)) barColumns.push(x)
     }
-    const strokes=groupRuns(barColumns).map(run=>({x:(run[0]+run.at(-1))/2,width:run.length})).filter(s=>s.width<spacing*.85)
+    const strokes=groupRuns(barColumns).map(run=>({x:(run[0]+run.at(-1))/2,width:run.length})).filter(s=>s.width<spacing*1.6)
     const bars=[]
     for(const stroke of strokes) {
       const last=bars.at(-1)
@@ -174,21 +215,7 @@ export function analyzeBinary({ink,width,height}, {fullScore=false, scale=1}={})
     staff.boundaries=[staff.left,...staff.bars.map(b=>b.x).filter(x=>x>staff.left+staff.spacing*2&&x<staff.right-staff.spacing*2),staff.right]
     staff.measureCount=staff.boundaries.length-1
   }
-  for(const systemId of new Set(staves.map(s=>s.system))) {
-    const group=staves.filter(s=>s.system===systemId)
-    const required=group.length>=3?Math.max(2,Math.ceil(group.length*.35)):group.length
-    const left=median(group.map(s=>s.left)),right=median(group.map(s=>s.right)),spacing=median(group.map(s=>s.spacing))
-    const grid=[]
-    for(const bar of group.flatMap(s=>s.bars).filter(b=>b.support>=required&&b.x>left+spacing*3&&b.x<right-spacing*3).sort((a,b)=>a.x-b.x)) {
-      if(!grid.length||bar.x-grid.at(-1)>spacing*.7) grid.push(bar.x)
-    }
-    for(const staff of group) {
-      staff.boundaries=[Math.max(staff.left,left-spacing),...grid.filter(x=>x>staff.left+spacing&&x<staff.right-spacing),staff.right]
-      staff.measureCount=staff.boundaries.length-1
-      for(const bar of staff.bars) bar.accepted=grid.some(x=>Math.abs(x-bar.x)<spacing*.7)||bar.x<left+spacing*3||bar.x>right-spacing*3
-      staff.inferredBars=grid.filter(x=>!staff.bars.some(bar=>Math.abs(bar.x-x)<spacing*.7))
-    }
-  }
+  reconcileBarlines(staves)
   return {version:1,width:width/scale,height:height/scale,skewDegrees:Math.atan(slope)*180/Math.PI,staves}
 }
 
