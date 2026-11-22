@@ -154,10 +154,10 @@ export function inspectSymbols(doc) {
   return {counts,warnings}
 }
 
-// Connected components outside the staff distinguish compact staccato dots
-// from long stems/tenuto strokes. Evidence is reviewable, never an auto-edit.
-export function findStaccatoDots({ink,width,height},{x,y,spacing:s,top,bottom}) {
-  const left=Math.max(0,Math.floor(x-s)),right=Math.min(width-1,Math.ceil(x+s)),lo=Math.max(0,Math.floor(Math.min(y,top)-s*4)),hi=Math.min(height-1,Math.ceil(Math.max(y,bottom)+s*4))
+// Connected components distinguish compact dots, accents and wedges from
+// stems/tenuto strokes. Clear evidence is applied with provenance for review.
+export function findArticulationShapes({ink,width,height},{x,y,spacing:s,top,bottom}) {
+  const left=Math.max(0,Math.floor(x-s*1.3)),right=Math.min(width-1,Math.ceil(x+s*1.3)),lo=Math.max(0,Math.floor(Math.min(y,top)-s*5)),hi=Math.min(height-1,Math.ceil(Math.max(y,bottom)+s*5))
   const visited=new Set(),dots=[]
   for(let cy=lo;cy<=hi;cy++)for(let cx=left;cx<=right;cx++) {
     const start=cy*width+cx
@@ -169,12 +169,34 @@ export function findStaccatoDots({ink,width,height},{x,y,spacing:s,top,bottom}) 
     }
     const w=maxX-minX+1,h=maxY-minY+1,midX=(minX+maxX)/2,midY=(minY+maxY)/2
     if(minX===left||maxX===right||minY===lo||maxY===hi)continue
-    if(w<s*.15||h<s*.15||w>s*.65||h>s*.65||w/h<.55||w/h>1.8||n/(w*h)<.5||n<2)continue
-    if(Math.abs(midX-x)>s*.55||Math.abs(midY-y)<s*.9||Math.abs(midY-y)>s*5)continue
-    if(midY>top-s*.35&&midY<bottom+s*.35)continue
-    dots.push({x:midX,y:midY})
+    if(Math.abs(midX-x)>s*.65||Math.abs(midY-y)<s*.8||Math.abs(midY-y)>s*6)continue
+    let tag=null
+    if(w>=s*.15&&h>=s*.15&&w<=s*.65&&h<=s*.65&&w/h>=.55&&w/h<=1.8&&n/(w*h)>=.5&&n>=2)tag='staccato'
+    if(tag==='staccato') {
+      // A thresholded slur endpoint can become a tiny detached blob. A genuine
+      // dot has clear space to either side; the slur continues sideways nearby.
+      const sideInk=side=>{let hits=0;for(let dx=Math.ceil(s*.7);dx<=s*1.5;dx++){let hit=false;for(let dy=-Math.ceil(s*.85);dy<=Math.ceil(s*.85);dy++){const px=Math.round(midX+side*dx),py=Math.round(midY+dy);if([0,1,2,3,4].some(line=>Math.abs(py-(top+line*s))<=Math.max(1,s*.2)))continue;if(px>=0&&px<width&&py>=0&&py<height&&ink[py*width+px])hit=true}if(hit)hits++}return hits}
+      if(Math.max(sideInk(-1),sideInk(1))>=s*.4)tag=null
+    }
+    const span=points=>points.length?Math.max(...points)-Math.min(...points)+1:0
+    const leftSpan=span(queue.filter(([px])=>px<=minX+w*.3).map(([,py])=>py)),rightSpan=span(queue.filter(([px])=>px>=maxX-w*.3).map(([,py])=>py))
+    if(w>=s*.65&&w<=s*1.8&&h>=s*.35&&h<=s*1.25&&w/h>=1.1&&n/(w*h)<.7&&leftSpan>=h*.7&&rightSpan<=h*.65)tag='accent'
+    const upper=span(queue.filter(([,py])=>py<=minY+h*.25).map(([px])=>px)),lower=span(queue.filter(([,py])=>py>=maxY-h*.25).map(([px])=>px))
+    if(h>=s*.7&&h<=s*1.8&&w>=s*.3&&w<=s&&h/w>=1.3&&n/(w*h)>.4&&((midY<y&&upper>=w*.75&&lower<=w*.6)||(midY>y&&lower>=w*.75&&upper<=w*.6)))tag='staccatissimo'
+    if(tag)dots.push({tag,x:midX,y:midY})
   }
   return dots
+}
+export function findStaccatoDots(binary,anchor) {return findArticulationShapes(binary,anchor).filter(p=>p.tag==='staccato').map(({x,y})=>({x,y}))}
+
+export function applyImageArticulations(doc,review) {
+  let added=0
+  const notes=new Map([...doc.querySelectorAll('note[id]')].map(note=>[note.id,note]))
+  for(const item of review)if(item.kind==='missing'&&item.automatic&&MARKS[item.tag]) {
+    const note=notes.get(item.id)
+    if(note&&!note.querySelector('notations '+item.tag)&&toggleMark(note,item.tag)) {item.kind='added';added++}
+  }
+  return added
 }
 
 export function symbolReview(doc,value) {

@@ -1,4 +1,5 @@
 // Plays the score Verovio has loaded, with a small built-in synth.
+import {articulationPolicy,performMidi} from './performance.js'
 export class Player {
   notes = [] // {id, t, dur (ms), pitch (MIDI)}
   #timer = null
@@ -6,13 +7,24 @@ export class Player {
   #master = null
 
   /** Read notes and timing from the toolkit's current score. Returns the MIDI file (base64). */
-  load(tk) {
+  load(tk,doc) {
     const midi = tk.renderToMIDI()
+    const tracks=new Map();let slot=0
+    for(const part of doc.querySelectorAll('score-partwise > part')) {tracks.set(part.id,slot);slot+=Number(part.querySelector('staves')?.textContent||1)}
+    const specifications=[]
+    const notesById=new Map([...doc.querySelectorAll('note[id]')].map(note=>[note.id,note]))
     this.notes = tk
       .renderToTimemap()
-      .flatMap((entry) => (entry.on ?? []).map((id) => ({ id, t: entry.tstamp, ...tk.getMIDIValuesForElement(id) })))
-      .map(({ id, t, pitch, duration }) => ({ id, t, pitch, dur: duration }))
-    return midi
+      .flatMap((entry) => (entry.on ?? []).map((id) => ({ id, t: entry.tstamp,quarter:entry.qstamp, ...tk.getMIDIValuesForElement(id) })))
+      .map(({ id, t, pitch, duration,quarter }) => {
+        const note=notesById.get(id)
+        const policy=articulationPolicy({staccato:!!note?.querySelector('staccato'),staccatissimo:!!note?.querySelector('staccatissimo'),accent:!!note?.querySelector('accent'),strongAccent:!!note?.querySelector('strong-accent'),tied:!!note?.querySelector('tie,tied')})
+        if(note)specifications.push({track:tracks.get(note.closest('part').id)+Number(note.querySelector('staff')?.textContent||1)-1,quarter,pitch,...policy})
+        return {id,t,pitch,dur:duration*policy.gate,velocity:Math.min(127,80+policy.boost)}
+      })
+    const performed=performMidi(Uint8Array.from(atob(midi),c=>c.charCodeAt(0)),specifications)
+    let binary='';for(let i=0;i<performed.length;i+=32768)binary+=String.fromCharCode(...performed.subarray(i,i+32768))
+    return btoa(binary)
   }
 
   get playing() {
@@ -30,16 +42,17 @@ export class Player {
     return this.#context
   }
 
-  #voice(pitch, when, seconds) {
+  #voice(pitch, when, seconds, velocity=80) {
     const context = this.#context
     const osc = context.createOscillator()
     const gain = context.createGain()
     osc.type = 'triangle'
     osc.frequency.value = 440 * 2 ** ((pitch - 69) / 12)
     gain.gain.setValueAtTime(0, when)
-    gain.gain.linearRampToValueAtTime(0.3, when + 0.01)
-    gain.gain.exponentialRampToValueAtTime(0.06, when + Math.max(seconds, 0.05))
-    gain.gain.linearRampToValueAtTime(0, when + Math.max(seconds, 0.05) + 0.06)
+    const length=Math.max(seconds,.02),level=.3*velocity/80
+    gain.gain.linearRampToValueAtTime(level, when + Math.min(.01,length*.2))
+    gain.gain.exponentialRampToValueAtTime(level*.2, when + length*.75)
+    gain.gain.linearRampToValueAtTime(0, when + length)
     osc.connect(gain).connect(this.#master)
     osc.start(when)
     osc.stop(when + seconds + 0.1)
@@ -62,7 +75,7 @@ export class Player {
     this.#onEnd = onEnd
     this.#timer = setInterval(() => {
       for (; next < this.notes.length && when(this.notes[next].t) < context.currentTime + 0.25; next++)
-        this.#voice(this.notes[next].pitch, when(this.notes[next].t), this.notes[next].dur / 1000)
+        this.#voice(this.notes[next].pitch, when(this.notes[next].t), this.notes[next].dur / 1000,this.notes[next].velocity)
       const now = (context.currentTime - start) * 1000
       onTick(this.notes.filter((n) => n.t <= now && now < n.t + n.dur).map((n) => n.id))
       if (now > end) this.stop()

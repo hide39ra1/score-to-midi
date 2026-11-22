@@ -11,7 +11,7 @@ import {storeGeometry,inspectGeometry} from './geometry-report.js'
 import {staffY} from './structure.js'
 import {normalizeTies,collectTiePairs,inspectTies,tieCandidates} from './ties.js'
 import {exportForMuseScore} from './musescore.js'
-import {MARKS,DYNAMICS,annotateDirections,inspectSymbols,listNoteSymbols,symbolReview,attributeContext,parseMeter,normalizeSymbolStructure} from './symbols.js'
+import {MARKS,DYNAMICS,annotateDirections,inspectSymbols,listNoteSymbols,symbolReview,attributeContext,parseMeter,normalizeSymbolStructure,applyImageArticulations} from './symbols.js'
 
 const $ = (id) => document.getElementById(id)
 const show = (view) => (document.body.dataset.view = view)
@@ -210,12 +210,13 @@ async function open(xml, recognize = true) {
     }
     tieCandidates(score.doc,candidates)
     progress('奏法記号の画像を照合中…')
-    const notes=[...score.doc.querySelectorAll('note[id]')].filter(n=>n.querySelector('pitch')).map(n=>{const at=/-p(\d+)-(\d+)-(\d+)$/.exec(n.id);return at?{id:n.id,page:+at[1],x:+at[2],y:+at[3],staccato:!!n.querySelector('staccato')}:null}).filter(Boolean)
+    const notes=[...score.doc.querySelectorAll('note[id]')].filter(n=>n.querySelector('pitch')).map(n=>{const at=/-p(\d+)-(\d+)-(\d+)$/.exec(n.id);return at?{id:n.id,page:+at[1],x:+at[2],y:+at[3],staccato:!!n.querySelector('staccato'),accent:!!n.querySelector('accent'),staccatissimo:!!n.querySelector('staccatissimo')}:null}).filter(Boolean)
     const reviews=[]
     for(const [page,image] of pages.entries())if(image.structure?.staves?.length) {
       try{reviews.push(...await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,operation:'symbols',png:image.png,structure:image.structure,page,notes:notes.filter(n=>n.page===page)})}))}
       catch(error){reviews.push({kind:'error',message:`${page+1}ページ: ${error.message}`})}
     }
+    applyImageArticulations(score.doc,reviews)
     symbolReview(score.doc,reviews)
   }
   routeParts(score.doc)
@@ -327,7 +328,7 @@ async function draw() {
   const svgs = await score.render(Math.max(pane.clientWidth - 28, 320))
   pane.innerHTML = svgs.map((svg) => `<div class="page">${svg}</div>`).join('')
   pane.scrollTop = scroll
-  midi = player.load(await verovio())
+  midi = player.load(await verovio(),score.doc)
   $('save-midi').disabled = !midi
   $('play').disabled = !midi
   select(selected)
@@ -339,6 +340,8 @@ async function draw() {
 
 function drawGeometry() {
   geometryReport=inspectGeometry(score.doc)
+  if(geometryReport.recognitionVersion==='legacy'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
+  if(geometryReport.pageAlignment.length)$('quality').textContent+=` ページ間のパート対応に${geometryReport.pageAlignment.length}件の欠落・未割当てがあります。空欄と原稿を確認してください。`
   if(geometryReport.warnings.length) $('quality').textContent+=` 五線・小節の構造照合で${geometryReport.warnings.length}件の確認候補があります。`
   const structures=geometryReport.structures
   const staffCount=structures.reduce((n,p)=>n+(p?.staves?.length||0),0)
@@ -347,7 +350,9 @@ function drawGeometry() {
   $('geometry-summary').textContent=staffCount?`画像から${staffCount}組の五線・${barCount}本の小節線候補を検出。${geometryReport.symbols.length}個の音符・休符の座標を照合しました。`:'五線を検出できませんでした。原稿のない編集再開時は、保存された解析情報だけを表示します。'
   if(failed) $('geometry-summary').textContent+=` ${failed}ページで構造解析に失敗しています。`
   const recovered=geometryReport.staffRecovery.filter(item=>item.notes),matched=geometryReport.recognitionReview.reduce((n,item)=>n+(item.matched||0),0)
-  if(recovered.length)$('quality').textContent+=` 欠落五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+item.notes,0)}音符を回復しました。`
+  const retriesFailed=geometryReport.staffRecovery.filter(item=>item.error).length
+  if(retriesFailed)$('quality').textContent+=` 再試行で改善を確認できない五線が${retriesFailed}組あります。`
+  if(recovered.length)$('quality').textContent+=` 五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+(item.addedNotes??item.notes),0)}音符を追加しました。先頭小節の不整合も再試行の対象です。`
   if(matched)$('geometry-summary').textContent+=` ${matched}音符の推定位置を符頭検出と対応付けて補正しました。丸印は認識結果の位置であり、音高・音価が正しいという判定ではありません。`
   $('geometry-warnings').replaceChildren(...geometryReport.warnings.map(w=>{const li=document.createElement('li');li.textContent=w.message;return li}))
   $('toggle-structure').disabled=!pages.length||!staffCount
@@ -424,13 +429,15 @@ function drawSymbols() {
   $('symbol-summary').textContent=`音部記号 ${c.clef} / 調号 ${c.key} / 拍子 ${c.time} / 強弱 ${c.dynamics} / アクセント ${c.accent} / スタッカート ${c.staccato} / フェルマータ ${c.fermata} / ヘアピン ${c.wedge} / 反復 ${c.repeat}。出力数であり、原稿の全記号を検出できたことを示すものではありません。`
   $('symbol-warnings').replaceChildren(...report.warnings.map(message=>{const li=document.createElement('li');li.textContent=message;return li}))
   const missing=[],uncertain=[]
-  for(const item of symbolReview(score.doc).filter(item=>item.kind==='error'||!!score.note(item.id))) {
+  const imageAdded=symbolReview(score.doc).filter(item=>item.kind==='added').length
+  if(imageAdded)$('symbol-summary').textContent+=` 画像照合で奏法記号${imageAdded}個を補完しました。`
+  for(const item of symbolReview(score.doc).filter(item=>item.kind!=='added'&&(item.kind==='error'||!!score.note(item.id)))) {
     const li=document.createElement('li')
     if(item.kind==='error'){li.textContent=item.message;missing.push(li);continue}
     const present=!!score.note(item.id).querySelector(item.tag)
     if(item.kind==='missing'&&present)continue
     if(item.kind==='unconfirmed'&&!present)continue
-    const preview=document.createElement('button');preview.textContent=item.kind==='missing'?'点形状あり・スタッカート未出力：確認':'スタッカートの点形状を照合できません：確認'
+    const preview=document.createElement('button');preview.textContent=item.kind==='missing'?`${MARKS[item.tag]}の画像候補：確認`:`${MARKS[item.tag]}の形状を照合できません：確認`
     preview.onclick=()=>{select(item.id,true);if(pages.length){document.body.classList.add('show-structure');$('toggle-structure').setAttribute('aria-pressed','true')}$('symbol-selection').textContent+='／原稿を確認して「記号を追加・解除」で修正できます。';$('mark-type').value=item.tag}
     li.append(preview);(item.kind==='missing'?missing:uncertain).push(li)
   }

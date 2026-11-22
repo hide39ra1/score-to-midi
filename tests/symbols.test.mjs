@@ -1,6 +1,6 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {classifyDirection,parseMeter,findStaccatoDots} from '../src/symbols.js'
+import {classifyDirection,parseMeter,findStaccatoDots,findArticulationShapes} from '../src/symbols.js'
 
 test('recognize exact dynamics and performance words without treating ordinary labels as symbols',()=>{
   assert.deepEqual(classifyDirection(' sfz '),{kind:'dynamic',value:'sfz'})
@@ -20,5 +20,14 @@ test('a compact dot outside its staff provides staccato evidence',()=>{
 })
 test('staff intersections, augmentation dots, tenuto and stems are not staccato evidence',()=>{
   const b=binary();rect(b,0,30,100,1);rect(b,49,34,3,3);rect(b,48,19,8,2);rect(b,50,74,1,20)
+  assert.deepEqual(findStaccatoDots(b,anchor),[])
+})
+test('an accent and a separate dot are recognized together rather than replacing one another',()=>{
+  const b=binary();rect(b,49,20,3,3)
+  for(let i=0;i<=8;i++){rect(b,46+i,10+Math.round(i/4),1,2);rect(b,46+i,14-Math.round(i/4),1,2)}
+  assert.deepEqual(findArticulationShapes(b,anchor).map(s=>s.tag).sort(),['accent','staccato'])
+})
+test('a detached slur endpoint is not automatically treated as a staccato dot',()=>{
+  const b=binary();rect(b,49,20,3,3);rect(b,35,19,9,1)
   assert.deepEqual(findStaccatoDots(b,anchor),[])
 })
