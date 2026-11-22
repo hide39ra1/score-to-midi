@@ -4,6 +4,7 @@
 // the recogniser (the "staff-layout" field), note positions from the note ids.
 
 import { tempoMark } from './score.js'
+import {readMetronome} from './tempo.js'
 import { detectTitle } from './title.js'
 import {staffLayout} from './geometry-report.js'
 import {classifyDirection} from './symbols.js'
@@ -26,10 +27,6 @@ const GLYPHS = {
   '\uF023': '#', '\uF062': 'b', '\uF071': 'q', '\uF068': 'h', '\uF065': 'e', '\uF06B': '.',
   '\uE1D5': 'q', '\uECA5': 'q', '\uE1D3': 'h', '\uECA3': 'h', '\uE1D7': 'e', '\uECA7': 'e', '\uE1E7': '.', '\uECB7': '.',
 }
-const UNITS = { q: 'quarter', h: 'half', e: 'eighth' }
-// "q = 156" (the note glyph mapped above), "(q. = ca. 60)", and what OCR makes of the
-// note: "J=156", "d = 156" - there the unit is unknown and taken as a quarter.
-const METRONOME = /(?:\b([qhe])(\.?))?\s*=\s*(?:c(?:irc)?a\.?\s*)?(\d{2,3})/
 const TEMPO_WORDS = {
   grave: 40, largo: 50, larghetto: 60, lento: 54, adagio: 66, andante: 84, andantino: 90, moderato: 108,
   allegretto: 116, allegro: 132, vivace: 160, presto: 176, prestissimo: 200,
@@ -38,22 +35,11 @@ const TEMPO_WORD = new RegExp(`\\b(${Object.keys(TEMPO_WORDS).join('|')})\\b`, '
 
 /** The tempo a line of text states, if any: {tokens, x, bpm, unit, dotted, words}. */
 function readTempo(line) {
-  const number = line.map((t) => METRONOME.exec(t.str))
-  // OCR may split "J = 156" into pieces: then the whole line has to be read as one.
-  const joined = number.some(Boolean) ? null : METRONOME.exec(line.map((t) => t.str).join(' '))
-  const word = line.find((t) => TEMPO_WORD.test(t.str))
-  const m = number.find(Boolean) ?? joined
-  if (!m && !word) return null
-  const tokens = joined ? line : line.filter((t, i) => number[i] || t === word)
-  return {
-    tokens,
-    x: Math.min(...tokens.map((t) => t.x)),
-    bpm: m ? +m[3] : TEMPO_WORDS[TEMPO_WORD.exec(word.str)[1].toLowerCase()],
-    unit: UNITS[m?.[1]] ?? 'quarter',
-    dotted: !!m?.[2],
-    // Words like "Presto ma dolce" are kept; a bare metronome mark needs none.
-    words: word?.str.replace(/\(?\s*\S?\.?\s*=.*$/, '').trim(),
-  }
+  const mark = readMetronome(line)
+  const word = line.find((token) => TEMPO_WORD.test(token.str))
+  if (mark) return mark
+  if (!word) return null
+  return { tokens: [word], x: word.x, bpm: TEMPO_WORDS[TEMPO_WORD.exec(word.str)[1].toLowerCase()], words: word.str }
 }
 
 /** Join the pieces a PDF splits text into ("C" "sus" "/F") and drop music-font glyphs. */
