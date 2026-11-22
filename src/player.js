@@ -8,6 +8,13 @@ export class Player {
 
   /** Read notes and timing from the toolkit's current score. Returns the MIDI file (base64). */
   load(tk,doc) {
+    // Verovio engraves simile measures but omits their sounding notes from MIDI.
+    // Our MusicXML already contains the expanded notes; render those for playback.
+    if(doc.querySelector('measure-repeat')) {
+      const playback=doc.cloneNode(true)
+      playback.querySelectorAll('measure-style').forEach(style=>{if(style.querySelector('measure-repeat'))style.remove()})
+      tk.loadData(new XMLSerializer().serializeToString(playback))
+    }
     const midi = tk.renderToMIDI()
     const tracks=new Map();let slot=0
     for(const part of doc.querySelectorAll('score-partwise > part')) {tracks.set(part.id,slot);slot+=Number(part.querySelector('staves')?.textContent||1)}

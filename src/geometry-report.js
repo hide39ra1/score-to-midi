@@ -1,4 +1,4 @@
-import {locateSymbol,staffY} from './structure.js'
+import {locateSymbol,staffY,allStaves} from './structure.js'
 const fieldName='image-structure-v1'
 export function eventStarts(events) {
   let cursor=0,previous=0
@@ -32,6 +32,8 @@ export function staffLayout(doc) {
 }
 export function inspectGeometry(doc,structures=readGeometry(doc)) {
   const symbols=[],warnings=[],byPart=new Map(),observed=new Map()
+  let repeats=[]
+  try {repeats=JSON.parse(doc.querySelector('miscellaneous-field[name="percussion-analysis-v1"]')?.textContent||'{}').repeats||[]}catch{}
   for(const part of doc.querySelectorAll('score-partwise > part')) {
     let divisions=1
     for(const [measureIndex,measure] of [...part.querySelectorAll(':scope > measure')].entries()) {
@@ -64,15 +66,16 @@ export function inspectGeometry(doc,structures=readGeometry(doc)) {
     const offset=[...offsets].sort((a,b)=>b[1]-a[1])[0][0]
     const wrong=reliable.filter(s=>s.measureIndex-s.measure!==offset)
     if(wrong.length) warnings.push({kind:'measure-position',part:entries[0].part,page:entries[0].page,ids:wrong.map(s=>s.id),message:`${entries[0].part}：画像の小節位置と認識結果が${wrong.length}記号で一致しません`})
-    const expected=Math.max(...entries.map(s=>structures[s.page].staves.find(staff=>staff.id===s.staff).measureCount))
-    const count=new Set(entries.map(s=>s.measureIndex)).size
+    const expected=Math.max(...entries.map(s=>allStaves(structures[s.page]).find(staff=>staff.id===s.staff)?.measureCount||0))
+    const count=new Set([...entries.map(s=>s.measureIndex),...repeats.filter(r=>r.part===entries[0].part&&r.page===entries[0].page).map(r=>r.index)]).size
     if(count!==expected) warnings.push({kind:'measure-count',part:entries[0].part,page:entries[0].page,message:`${entries[0].part}：画像${expected}小節／認識${count}小節（部分小節・誤検出を含む確認候補）`})
   }
   structures.forEach((structure,page)=>{
-    for(const staff of structure?.staves||[]) if(!observed.has(`${page}/${staff.id}`)) warnings.push({kind:'unread-staff',page,sourcePage:structure.sourcePage||page+1,staff:staff.id,message:`原稿${structure.sourcePage||page+1}ページの第${staff.id}五線に対応する音符・休符がありません`})
+    for(const staff of allStaves(structure)) if(!observed.has(`${page}/${staff.id}`)) warnings.push({kind:'unread-staff',page,sourcePage:structure.sourcePage||page+1,staff:staff.id,message:`原稿${structure.sourcePage||page+1}ページの第${staff.id}${staff.lineCount===1?'一線譜':'五線'}に対応する音符・休符がありません`})
   })
   symbols.sort((a,b)=>a.page-b.page||(a.system??0)-(b.system??0)||(a.measure??0)-(b.measure??0)||a.x-b.x||a.y-b.y)
   const metadata=name=>{try{return JSON.parse(doc.querySelector(`miscellaneous-field[name="${name}"]`)?.textContent||'[]')}catch{return []}}
   const revision=metadata('recognition-version')
-  return {version:1,source:'image-geometry + homr symbol anchors',recognitionVersion:typeof revision==='string'?revision:'legacy',structures,symbols,warnings,recognitionReview:metadata('recognition-review-v1'),staffRecovery:metadata('staff-recovery-v1'),pageAlignment:metadata('page-alignment-v1')}
+  const percussion=metadata('percussion-analysis-v1')
+  return {version:1,source:'image-geometry + homr symbol anchors',recognitionVersion:typeof revision==='string'?revision:'legacy',structures,symbols,warnings,recognitionReview:metadata('recognition-review-v1'),staffRecovery:metadata('staff-recovery-v1'),pageAlignment:metadata('page-alignment-v1'),percussion:!Array.isArray(percussion)?percussion:{lanes:[],repeats:[],warnings:[]}}
 }

@@ -1,18 +1,22 @@
-import {binarize,analyzeBinary} from './structure.js'
+import {binarize,analyzeBinary,mergeStaffDetections,detectSingleLineStaves} from './structure.js'
 import {detectTieArc} from './ties.js'
 import {staffY,locateSymbol} from './structure.js'
 import {findArticulationShapes} from './symbols.js'
+import {analyzePercussion} from './percussion-image.js'
 self.onmessage=async ({data})=>{
   try {
     const bitmap=await createImageBitmap(new Blob([data.png],{type:'image/png'}))
-    const scale=Math.min(1,1800/bitmap.width)
+    // Percussion geometry arrives in original image coordinates.
+    const scale=data.operation==='percussion'?1:Math.min(1,1800/bitmap.width)
     const canvas=new OffscreenCanvas(Math.round(bitmap.width*scale),Math.round(bitmap.height*scale))
     const context=canvas.getContext('2d',{willReadFrequently:true})
     context.fillStyle='white';context.fillRect(0,0,canvas.width,canvas.height)
     context.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close()
-    const binary=binarize(context.getImageData(0,0,canvas.width,canvas.height))
+    const pixels=context.getImageData(0,0,canvas.width,canvas.height),binary=binarize(pixels)
     let result
-    if(data.operation==='symbols') {
+    if(data.operation==='percussion') {
+      result=analyzePercussion(binary,data.structure)
+    } else if(data.operation==='symbols') {
       result=[]
       for(const note of data.notes||[]) {
         const location=locateSymbol(data.structure,note.x,note.y)
@@ -36,7 +40,11 @@ self.onmessage=async ({data})=>{
         const arc=detectTieArc(binary,scaled,staff.spacing*scale,staff.lines.map((_,i)=>staffY(staff,(pair.a.x+pair.b.x)/2,i)*scale))
         if(arc) {for(const key of ['x1','x2','y1','y2','controlX','controlY'])arc[key]/=scale;result.push({...arc,page:data.page})}
       }
-    } else result=analyzeBinary(binary,{scale,fullScore:data.fullScore})
+    } else {
+      const options={scale,fullScore:data.fullScore}
+      result=mergeStaffDetections(analyzeBinary(binary,options),analyzeBinary(binarize(pixels,{thresholdFloor:195}),options))
+      result.percussionStaves=detectSingleLineStaves(binary,result,{scale})
+    }
     self.postMessage({id:data.id,result})
   } catch(error) {self.postMessage({id:data.id,error:error.message})}
 }

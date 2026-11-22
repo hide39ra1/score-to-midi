@@ -8,7 +8,8 @@ import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments, rout
 import { separateMidiTracks } from './midi.js'
 import { sourceTitle, safeFileName, unknownTitle } from './title.js'
 import {storeGeometry,inspectGeometry} from './geometry-report.js'
-import {staffY} from './structure.js'
+import {staffY,allStaves} from './structure.js'
+import {applyPercussion} from './percussion.js'
 import {normalizeTies,collectTiePairs,inspectTies,tieCandidates} from './ties.js'
 import {exportForMuseScore} from './musescore.js'
 import {MARKS,DYNAMICS,annotateDirections,inspectSymbols,listNoteSymbols,symbolReview,attributeContext,parseMeter,normalizeSymbolStructure,applyImageArticulations} from './symbols.js'
@@ -189,6 +190,13 @@ async function open(xml, recognize = true) {
       try{return await ocrInstrumentLabels(page)}catch{return []}
     }))
     namePartsFromText(score.doc, text.map((items,index)=>[...items,...labels[index]]))
+    progress('打楽器の一線譜・小節反復を照合中…')
+    const percussion=[]
+    for(const [page,image] of pages.entries()) {
+      try{percussion.push(await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,operation:'percussion',png:image.png,structure:image.structure,page})}))}
+      catch(error){percussion.push({lanes:[],repeats:[],error:error.message})}
+    }
+    applyPercussion(score.doc,pages,percussion,text.map((items,index)=>[...items,...labels[index]]))
     annotateDirections(score.doc,text)
     const result = annotate(score.doc, text)
     // Engine placeholders and author guesses are not a verified title.
@@ -248,6 +256,7 @@ function renderParts() {
     const name = document.createElement('input'); name.value = part.name; name.setAttribute('aria-label', `${index+1}番のパート名`)
     const instrument = document.createElement('select'); instrument.setAttribute('aria-label', `${index+1}番の楽器・音色`)
     for (const [id,title,program,shift] of INSTRUMENTS) {
+      if(!part.percussion&&['drums','agogo','sleigh','tambourine'].includes(id))continue
       const option = document.createElement('option'); option.value = id; option.textContent = title; instrument.append(option)
     }
     // Selection is a suggestion only; the original transpose remains unchanged until applied.
@@ -256,6 +265,7 @@ function renderParts() {
     instrument.options[0].textContent = `未設定・その他（現在GM ${part.program}）`
     const transpose = document.createElement('input'); transpose.type = 'number'; transpose.min = -36; transpose.max = 36; transpose.value = part.transpose; transpose.setAttribute('aria-label', `${index+1}番の移調（半音）`)
     const apply = document.createElement('button'); apply.textContent = '選択楽器の移調を適用'
+    if(part.percussion){instrument.disabled=true;transpose.disabled=true;apply.disabled=true}
     const commit = async (program = part.program) => {
       if (!Number.isInteger(Number(transpose.value)) || Number(transpose.value) < -36 || Number(transpose.value) > 36) { $('save-status').textContent = '移調は−36〜36の整数で指定してください。'; return }
       part.program = program
@@ -275,7 +285,7 @@ function renderParts() {
     row.append(label,name,instrument,transpose,apply)
     const hint=document.createElement('small');hint.style.gridColumn='2 / -1'
     hint.textContent=`原稿の楽器名候補: ${part.sourceLabel||'未取得'}`+(guesses.length>1?'／併記された代替楽器です。自動処理では先頭候補を仮割当します。実際に使う楽器へ変更できます。':'')
-    if(/drums|agogo|tambourine|sleigh\s*bells|打楽器/i.test(part.sourceLabel))hint.textContent+='／打楽器の音色・リズムの自動割当ては未対応です。'
+    if(part.percussion)hint.textContent+='／GM打楽器へ割当て済み。ドラムは標準配置による仮割当てです。原稿の配置と照合してください。'
     row.append(hint)
     return row
   }))
@@ -345,16 +355,19 @@ function drawGeometry() {
   if(geometryReport.warnings.length) $('quality').textContent+=` 五線・小節の構造照合で${geometryReport.warnings.length}件の確認候補があります。`
   const structures=geometryReport.structures
   const staffCount=structures.reduce((n,p)=>n+(p?.staves?.length||0),0)
+  const singleCount=structures.reduce((n,p)=>n+(p?.percussionStaves?.length||0),0)
   const barCount=structures.reduce((n,p)=>n+(p?.staves||[]).reduce((sum,s)=>sum+s.bars.filter(b=>b.accepted).length,0),0)
   const failed=structures.filter(p=>p?.error).length
   $('geometry-summary').textContent=staffCount?`画像から${staffCount}組の五線・${barCount}本の小節線候補を検出。${geometryReport.symbols.length}個の音符・休符の座標を照合しました。`:'五線を検出できませんでした。原稿のない編集再開時は、保存された解析情報だけを表示します。'
   if(failed) $('geometry-summary').textContent+=` ${failed}ページで構造解析に失敗しています。`
+  if(singleCount)$('geometry-summary').textContent+=` 打楽器の一線譜${singleCount}段を検出。小節反復${geometryReport.percussion.repeats.length}箇所を前小節の音符へ展開しました。`
+  if(geometryReport.percussion.warnings.length)$('quality').textContent+=` 打楽器に${geometryReport.percussion.warnings.length}件の確認候補があります。`
   const recovered=geometryReport.staffRecovery.filter(item=>item.notes),matched=geometryReport.recognitionReview.reduce((n,item)=>n+(item.matched||0),0)
   const retriesFailed=geometryReport.staffRecovery.filter(item=>item.error).length
   if(retriesFailed)$('quality').textContent+=` 再試行で改善を確認できない五線が${retriesFailed}組あります。`
   if(recovered.length)$('quality').textContent+=` 五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+(item.addedNotes??item.notes),0)}音符を追加しました。先頭小節の不整合も再試行の対象です。`
   if(matched)$('geometry-summary').textContent+=` ${matched}音符の推定位置を符頭検出と対応付けて補正しました。丸印は認識結果の位置であり、音高・音価が正しいという判定ではありません。`
-  $('geometry-warnings').replaceChildren(...geometryReport.warnings.map(w=>{const li=document.createElement('li');li.textContent=w.message;return li}))
+  $('geometry-warnings').replaceChildren(...[...geometryReport.warnings.map(w=>w.message),...geometryReport.percussion.warnings].map(message=>{const li=document.createElement('li');li.textContent=message;return li}))
   $('toggle-structure').disabled=!pages.length||!staffCount
   $('save-analysis').disabled=!staffCount
   const svgNS='http://www.w3.org/2000/svg'
@@ -363,16 +376,17 @@ function drawGeometry() {
     if(!overlay) return
     const children=[]
     const shape=(tag,attributes,title)=>{const el=document.createElementNS(svgNS,tag);for(const [key,value] of Object.entries(attributes)) el.setAttribute(key,value);if(title){const text=document.createElementNS(svgNS,'title');text.textContent=title;el.append(text)}children.push(el)}
-    for(const staff of structures[index]?.staves||[]) {
+    for(const staff of allStaves(structures[index])) {
       for(const points of staff.lines) shape('polyline',{points:points.map(p=>p.join(',')).join(' '),class:'staff-trace'},`五線 ${staff.id}`)
       for(const x of [staff.left,staff.right]) for(const line of [0,4]) shape('circle',{cx:x,cy:staffY(staff,x,line),r:staff.spacing*.3,class:'staff-corner'})
       for(const bar of staff.bars) shape('line',{x1:bar.x,x2:bar.x,y1:bar.top,y2:bar.bottom,class:bar.accepted?'bar-trace':'bar-candidate'},`小節線候補：${bar.type}／支持五線${bar.support}`)
       for(const x of staff.inferredBars||[]) shape('line',{x1:x,x2:x,y1:staffY(staff,x,0),y2:staffY(staff,x,4),class:'bar-inferred'},'他パートとの一致から補った境界候補')
     }
     const wrong=new Set(geometryReport.warnings.flatMap(w=>w.ids||[]))
+    for(const repeat of geometryReport.percussion.repeats.filter(r=>r.page===index))shape('circle',{cx:repeat.x,cy:repeat.y,r:8,class:'repeat-anchor'},'小節反復：前小節の認識結果を再演奏')
     for(const arc of tieCandidates(score.doc).filter(arc=>arc.page===index)) shape('path',{d:`M ${arc.x1} ${arc.y1} Q ${arc.controlX} ${arc.controlY} ${arc.x2} ${arc.y2}`,class:'tie-arc-candidate'},'タイの画像候補（未確定）')
     for(const symbol of geometryReport.symbols.filter(s=>s.page===index)) {
-      const staff=structures[index]?.staves.find(s=>s.id===symbol.staff),radius=(staff?.spacing||8)*.7
+      const staff=allStaves(structures[index]).find(s=>s.id===symbol.staff),radius=(staff?.spacing||8)*.7
       shape('circle',{cx:symbol.x,cy:symbol.y,r:radius,class:wrong.has(symbol.id)?'symbol-mismatch':symbol.kind==='rest'?'rest-anchor':'note-anchor'},`${symbol.kind==='rest'?'休符':'音符'} ${symbol.type||''}／五線${symbol.staff??'?'} 小節${symbol.measure??'?'} (${symbol.x},${symbol.y})`)
     }
     for(const item of symbolReview(score.doc).filter(item=>item.page===index&&item.kind==='missing'))shape('circle',{cx:item.x,cy:item.y,r:5,class:'symbol-mismatch'},'スタッカートの点形状候補（未確定）')

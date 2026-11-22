@@ -573,7 +573,7 @@ def scan(paths, progress=lambda done, total: None, full_score=False, geometry="[
         field = ET.SubElement(miscellaneous, "miscellaneous-field")
         field.set("name", "staff-layout")
         field.text = json.dumps(layout)
-        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery),("recognition-version", "2026-11-22-articulation-merge-3")]:
+        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery),("recognition-version", "2026-11-22-percussion-4")]:
             field = ET.SubElement(miscellaneous,"miscellaneous-field",name=name)
             field.text = json.dumps(value)
         if skipped:

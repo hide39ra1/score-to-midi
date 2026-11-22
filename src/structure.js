@@ -8,7 +8,7 @@ const groupRuns = values => {
   return groups
 }
 
-export function binarize({data,width,height}) {
+export function binarize({data,width,height},{thresholdFloor=0}={}) {
   const histogram=new Uint32Array(256), gray=new Uint8Array(width*height)
   for(let i=0;i<gray.length;i++) { const at=i*4; gray[i]=Math.round((data[at]*.299+data[at+1]*.587+data[at+2]*.114)*(data[at+3]/255)+255*(1-data[at+3]/255)); histogram[gray[i]]++ }
   let totalSum=0; for(let i=0;i<256;i++) totalSum+=i*histogram[i]
@@ -21,8 +21,46 @@ export function binarize({data,width,height}) {
     const variance=background*foreground*difference*difference
     if(variance>best) { best=variance;threshold=t }
   }
+  threshold=Math.max(threshold,thresholdFloor)
   return {width,height,ink:Uint8Array.from(gray,value=>value<=threshold?1:0),threshold}
 }
+
+export function mergeStaffDetections(primary,secondary) {
+  const staves=[...primary.staves]
+  for(const staff of secondary.staves) {
+    if(staves.some(s=>staff.top<s.bottom+s.spacing&&staff.bottom>s.top-s.spacing))continue
+    staves.push({...staff,detection:'light-strokes'})
+  }
+  staves.sort((a,b)=>a.top-b.top);staves.forEach((staff,i)=>staff.id=i+1)
+  return {...primary,staves}
+}
+
+export function detectSingleLineStaves({ink,width,height},structure,{scale=1}={}) {
+  if(structure.staves.length<2)return []
+  const spacing=median(structure.staves.map(s=>s.spacing))*scale
+  const left=median(structure.staves.map(s=>s.left))*scale,right=median(structure.staves.map(s=>s.right))*scale
+  const last=structure.staves.at(-1),start=Math.ceil(last.bottom*scale+spacing*3)
+  const rows=[]
+  for(let y=start;y<Math.min(height,last.bottom*scale+spacing*35);y++) {
+    let count=0;for(let x=Math.ceil(left);x<right;x++)count+=ink[y*width+x]||0
+    if(count>(right-left)*.7)rows.push(y)
+  }
+  const grid=last.boundaries||[],found=[]
+  for(const run of groupRuns(rows)) {
+    if(run.length>spacing*.4)continue
+    const y=run.reduce((n,y)=>n+y,0)/run.length
+    const supports=grid.filter(value=>{
+      const x=Math.round(value*scale);let above=0,below=0,n=0
+      for(let dy=Math.ceil(spacing*.3);dy<spacing*2;dy++){n++;for(const side of [-1,1]){const py=Math.round(y+side*dy);if([x-1,x,x+1].some(px=>px>=0&&px<width&&py>=0&&py<height&&ink[py*width+px])){if(side<0)above++;else below++}}}
+      return Math.max(above,below)>n*.7
+    })
+    if(supports.length<2)continue
+    found.push({id:structure.staves.length+found.length+1,lineCount:1,left:left/scale,right:right/scale,top:y/scale,bottom:y/scale,spacing:spacing/scale,system:last.system,lines:[[[left/scale,y/scale],[right/scale,y/scale]]],boundaries:grid,measureCount:grid.length-1,bars:grid.map(x=>({x,top:(y-spacing)/scale,bottom:(y+spacing)/scale,accepted:true,type:'single'})),inferredBars:[],confidence:.9})
+  }
+  return found
+}
+
+export const allStaves=structure=>[...(structure?.staves||[]),...(structure?.percussionStaves||[])]
 
 export function analyzeBinary({ink,width,height}, {fullScore=false, scale=1}={}) {
   const mid=width/2
@@ -155,7 +193,7 @@ export function analyzeBinary({ink,width,height}, {fullScore=false, scale=1}={})
 }
 
 export function staffY(staff,x,line=4) {
-  const points=staff.lines[line]
+  const points=staff.lines[Math.min(line,staff.lines.length-1)]
   const right=points.findIndex(p=>p[0]>=x)
   if(right<0) return points.at(-1)[1]
   if(right<=0) return points[Math.max(0,right)][1]
@@ -164,7 +202,7 @@ export function staffY(staff,x,line=4) {
 }
 
 export function locateSymbol(structure,x,y) {
-  const options=structure.staves.filter(s=>x>=s.left-s.spacing&&x<=s.right+s.spacing).map(staff=>{
+  const options=allStaves(structure).filter(s=>x>=s.left-s.spacing&&x<=s.right+s.spacing).map(staff=>{
     const top=staffY(staff,x,0),bottom=staffY(staff,x)
     return {staff,distance:Math.max(top-y,y-bottom,0),top,bottom}
   }).sort((a,b)=>a.distance-b.distance)

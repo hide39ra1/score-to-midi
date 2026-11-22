@@ -12,6 +12,7 @@ export const INSTRUMENTS = [
   ['tuba','テューバ',59,0], ['bassoon','ファゴット',71,0], ['violin','ヴァイオリン',41,0],
   ['viola','ヴィオラ',42,0], ['cello','チェロ',43,0], ['bass','コントラバス',44,-12],
   ['piano','ピアノ',1,0], ['glockenspiel','グロッケン',10,24],
+  ['drums','ドラムセット',1,0],['agogo','アゴゴ',1,0],['sleigh','スレイベル',1,0],['tambourine','タンバリン',1,0],
 ]
 
 export function identifyInstruments(text) {
@@ -86,6 +87,7 @@ export function partSettings(doc) {
     return { id: meta.id, name: meta.querySelector('part-name')?.textContent || `パート ${index+1}`,
       sourceLabel:meta.querySelector('miscellaneous-field[name="instrument-label"]')?.textContent||meta.querySelector('part-name')?.textContent||'',
       instrumentId:Object.entries(MUSESCORE_INSTRUMENTS).find(([,v])=>v[1]===meta.querySelector('instrument-sound')?.textContent)?.[0]||null,
+      percussion:!!meta.querySelector('midi-unpitched'),
       program: Number(meta.querySelector('midi-program')?.textContent || 1),
       transpose: Number(shift?.querySelector('chromatic')?.textContent || 0) + 12 * Number(shift?.querySelector('octave-change')?.textContent || 0) }
   })
@@ -95,12 +97,11 @@ export function routeParts(doc) {
   for (const [index,meta] of [...doc.querySelectorAll('part-list > score-part')].entries()) {
     const midi = meta.querySelector('midi-instrument')
     if (!midi) continue
-    const route = melodicRoute(index)
+    const route = melodicRoute(index),percussion=!!meta.querySelector('midi-unpitched')
     meta.querySelectorAll('midi-device').forEach(el => el.remove())
     const device = doc.createElement('midi-device'); device.setAttribute('port',route.port+1); device.id = midi.id
     meta.insertBefore(device,midi)
-    const channel = set(doc,midi,'midi-channel',route.channel+1)
-    midi.insertBefore(channel,midi.firstChild)
+    for(const instrument of meta.querySelectorAll('midi-instrument')){const channel=set(doc,instrument,'midi-channel',percussion?10:route.channel+1);instrument.insertBefore(channel,instrument.firstChild)}
     orderScorePart(meta)
   }
 }
@@ -110,6 +111,8 @@ export function applyPartSettings(doc, id, {name, program, transpose,instrumentI
   const part = [...doc.querySelectorAll('score-partwise > part')].find(p => p.id === id)
   if (!meta || !part) return
   set(doc, meta, 'part-name', name.trim() || id)
+  // Renaming a percussion part must preserve all of its GM instrument IDs.
+  if(meta.querySelector('midi-unpitched')) {orderScorePart(meta);return}
   meta.querySelectorAll('part-name-display, part-abbreviation, part-abbreviation-display').forEach(el => el.remove())
   let instrument = meta.querySelector('score-instrument')
   if (!instrument) { instrument = doc.createElement('score-instrument'); instrument.id = `${id}-instrument`; meta.append(instrument) }

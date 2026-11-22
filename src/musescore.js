@@ -1,6 +1,7 @@
 // Names / MusicXML sound IDs checked against MuseScore 4.6.5's official
 // share/instruments/instruments.xml. MIDI programs remain 1-based in MusicXML.
 export const MUSESCORE_INSTRUMENTS={
+  drums:['Drum Kit','drum.group.set','Drs.'],agogo:['Agogô Bells','metal.bells.agogo','Agogo'],sleigh:['Sleigh Bells','metal.bells.sleigh-bells','S.Bells'],tambourine:['Tambourine','drum.tambourine','Tamb.'],
   flute:['Flute','wind.flutes.flute','Fl.'],piccolo:['Piccolo','wind.flutes.flute.piccolo','Picc.'],
   oboe:['Oboe','wind.reed.oboe','Ob.'],clarinet:['B♭ Clarinet','wind.reed.clarinet.bflat','B♭ Cl.'],bassclarinet:['Bass Clarinet','wind.reed.clarinet.bass','B. Cl.'],
   soprano:['Soprano Saxophone','wind.reed.saxophone.soprano','S. Sax.'],alto:['Alto Saxophone','wind.reed.saxophone.alto','A. Sax.'],tenor:['Tenor Saxophone','wind.reed.saxophone.tenor','T. Sax.'],baritone:['Baritone Saxophone','wind.reed.saxophone.baritone','Bar. Sax.'],

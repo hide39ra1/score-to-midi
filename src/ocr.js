@@ -25,7 +25,7 @@ export function ocr(page) {
 // to the left of a staff are often lost in sparse full-page OCR.
 export function ocrInstrumentLabels(page) {
   return (last=last.catch(()=>{}).then(async()=>{
-    const staves=page.structure?.staves||[]
+    const staves=[...(page.structure?.staves||[]),...(page.structure?.percussionStaves||[])]
     if(!staves.length)return []
     labelWorker??=(async()=>{const t=await import(/* @vite-ignore */ TESSERACT);const w=await (t.default??t).createWorker('eng');await w.setParameters({tessedit_pageseg_mode:'6'});return w})()
     const engine=await labelWorker,bitmap=await createImageBitmap(new Blob([page.png],{type:'image/png'})),out=[]

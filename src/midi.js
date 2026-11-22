@@ -37,7 +37,8 @@ export function separateMidiTracks(bytes) {
     const channelEvents = events.filter(e => e.status < 240)
     const output = []
     if (channelEvents.length) {
-      const {port,channel} = melodicRoute(sounding++)
+      const route=melodicRoute(sounding++),percussion=channelEvents.some(e=>[128,144].includes(e.status&240)&&(e.status&15)===9)
+      const {port}=route,channel=percussion?9:route.channel
       if (port > 127) throw new Error('MIDIパート数が多すぎます。')
       output.push(0,255,33,1,port)
       const old = channelEvents[0].status & 15

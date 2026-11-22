@@ -38,5 +38,5 @@ export function inspectScore(doc) {
       if (actual > expected + 0.01 || (!pickup && actual < expected - 0.01)) warnings.push(`${part.id} 第${measure.getAttribute('number')}小節`)
     }
   }
-  return { parts: doc.querySelectorAll('score-partwise > part').length, notes: doc.querySelectorAll('note > pitch').length, measures, warnings }
+  return { parts: doc.querySelectorAll('score-partwise > part').length, notes: doc.querySelectorAll('note > pitch, note > unpitched').length, measures, warnings }
 }
