@@ -6,6 +6,7 @@ page and adds what homr lacks: octave clefs.
 import itertools
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -125,6 +126,26 @@ def _mark_octave_clefs(image, staff, symbols, carried):
 _parse_staff_image = staff_parsing.parse_staff_image
 _build_clef = music_xml_generator.build_clef
 _line_above = None  # (top of the staff, how its octave clefs ended) of the last staff read
+_recognition_review = []
+_input_map = lambda point: point
+_active_staffs = []
+
+
+def _match_noteheads(anchors, heads, unit):
+    """Unique, unambiguous matches. This changes location, never pitch or rhythm."""
+    candidates = []
+    for i, (x, y) in enumerate(anchors):
+        choices = sorted(((abs(x-hx)/unit + abs(y-hy)/unit*.65, j)
+                          for j, (hx, hy) in enumerate(heads)
+                          if abs(x-hx) <= unit*1.4 and abs(y-hy) <= unit*2), key=lambda p: p[0])
+        if choices and (len(choices) == 1 or choices[1][0]-choices[0][0] > .2):
+            candidates.append((choices[0][0], i, choices[0][1]))
+    matches, used = {}, set()
+    for cost, i, j in sorted(candidates):
+        if j not in used:
+            matches[i] = j
+            used.add(j)
+    return matches
 
 
 def _parse_staff_image_with_octave_clefs(debug, index, staff, image, *args, **kwargs):
@@ -135,6 +156,17 @@ def _parse_staff_image_with_octave_clefs(debug, index, staff, image, *args, **kw
     # homr reads a part line by line down the page, then starts the next part at the top.
     carried = _line_above[1] if _line_above and _line_above[0] < staff.min_y else {}
     _line_above = (staff.min_y, _mark_octave_clefs(image, staff, symbols, carried))
+    located = [symbol for symbol in symbols if _has_pitch(symbol) and symbol.image_coordinates]
+    def belongs_here(point):
+        def distance(other):
+            return max(other.min_y-point[1],point[1]-other.max_y,0)
+        return not _active_staffs or min(_active_staffs,key=distance) is staff
+    heads = list(dict.fromkeys(tuple(note.center) for note in staff.get_notes() if belongs_here(note.center)))
+    matches = _match_noteheads([symbol.image_coordinates for symbol in located], heads, max(float(staff.average_unit_size), 1))
+    for i, j in matches.items():
+        located[i].image_coordinates = heads[j]
+    _recognition_review.append({"page": _page, "staffIndex": index, "notes": len(located), "heads": len(heads),
+                                "matched": len(matches), "unmatchedHeads": [_input_map(point) for j, point in enumerate(heads) if j not in matches.values()]})
     return symbols
 
 
@@ -260,9 +292,10 @@ def _staff_boxes(rows, to_input):
 
 def _read_page(path, full_score=False):
     """One page image -> (MusicXML <score-partwise> element, staff boxes)."""
-    global _line_above
+    global _line_above, _input_map, _active_staffs
     _line_above = None
     rows, image, debug, _, _, to_input = detect_staffs_in_image(path, _CONFIG)
+    _input_map = to_input
     try:
         rows = repair_systems(debug, rows)
         if full_score:
@@ -273,6 +306,7 @@ def _read_page(path, full_score=False):
             rows = [MultiStaff(all_staffs, [])]
         else:
             rows = _split_unjoined_systems(image, rows)
+        _active_staffs = [staff for row in rows for staff in row.staffs]
         voices = staff_parsing.parse_staffs(debug, rows, image, config=_TRANSFORMER)
     finally:
         debug.clean_debug_files_from_previous_runs()
@@ -335,16 +369,76 @@ def _give_every_staff_a_clef(score):
                 first.insert(list(first).index(last[-1]) + 1 if last else len(first), copy)
 
 
-def scan(paths, progress=lambda done, total: None, full_score=False):
+def _recover_missing_staffs(xml, boxes, path, structure):
+    """Retry only independently detected missing staves in an explicit full score."""
+    staves = sorted(structure.get("staves", []), key=lambda staff: staff["top"])
+    original = cv2.imread(path)
+    if original is None:
+        return []
+    recovered = []
+    for index, staff in enumerate(staves):
+        center = (staff["top"]+staff["bottom"])/2
+        if any(abs((box[1]+box[3])/2-center) < staff["spacing"]*2 for box in boxes):
+            continue
+        left = max(0, int(staff["left"]-staff["spacing"]*3))
+        right = min(original.shape[1], int(staff["right"]+staff["spacing"]*2))
+        top = max(0, int((staves[index-1]["bottom"]+staff["top"])/2 if index else staff["top"]-staff["spacing"]*6))
+        bottom = min(original.shape[0], int((staff["bottom"]+staves[index+1]["top"])/2 if index+1<len(staves) else staff["bottom"]+staff["spacing"]*6))
+        crop_path = path+f"-staff-{index}.png"
+        cv2.imwrite(crop_path, original[top:bottom, left:right])
+        review_start = len(_recognition_review)
+        try:
+            retry, retry_boxes = _read_page(crop_path, True)
+            for review in _recognition_review[review_start:]:
+                review["unmatchedHeads"] = [[x+left,y+top] for x,y in review["unmatchedHeads"]]
+                review["retryStaff"] = staff["id"]
+            parts = retry.findall("part")
+            if len(parts) != 1 or not parts[0].findall(".//pitch"):
+                continue
+            part = parts[0]
+            for note in part.iter("note"):
+                match = re.search(r"-p(\d+)-(\d+)-(\d+)$", note.get("id", ""))
+                if match:
+                    note.set("id", note.get("id")[:match.start()]+f"-p{_page}-{int(match[2])+left}-{int(match[3])+top}")
+            meta = retry.find("part-list/score-part")
+            xml.find("part-list").append(meta)
+            xml.append(part)
+            boxes.extend([[b[0]+left,b[1]+top,b[2]+left,b[3]+top,0] for b in retry_boxes])
+            recovered.append({"staff": staff["id"], "notes": len(part.findall(".//pitch")), "measures": len(part.findall("measure"))})
+        except Exception as error:
+            recovered.append({"staff": staff["id"], "error": str(error)})
+        finally:
+            os.remove(crop_path)
+    if recovered:
+        def part_y(part):
+            positions = [int(m[3]) for note in part.iter("note") if (m := re.search(r"-p(\d+)-(\d+)-(\d+)$",note.get("id", "")))]
+            return float(np.median(positions)) if positions else float("inf")
+        pairs = list(zip(xml.find("part-list").findall("score-part"),xml.findall("part")))
+        for index, (meta, part) in enumerate(sorted(pairs,key=lambda pair: part_y(pair[1])),1):
+            part_id=f"P{index}"
+            meta.set("id",part_id);part.set("id",part_id)
+            ids={instrument.get("id"):f"{part_id}-I{j}" for j,instrument in enumerate(meta.findall("score-instrument"),1)}
+            for element in list(meta.iter())+list(part.iter()):
+                if element.get("id") in ids:element.set("id",ids[element.get("id")])
+            xml.find("part-list").remove(meta);xml.find("part-list").append(meta)
+            xml.remove(part);xml.append(part)
+    return recovered
+
+
+def scan(paths, progress=lambda done, total: None, full_score=False, geometry="[]"):
     """Recognise each page image; pages without music are skipped. Returns MusicXML text.
     The staff boxes of every page ride along as the miscellaneous field "staff-layout"."""
     global _page
+    structures = json.loads(geometry)
+    _recognition_review.clear()
     with tempfile.TemporaryDirectory() as tmp:
-        xmls, layout, skipped = [], [[] for _ in paths], []
+        xmls, layout, skipped, recovery = [], [[] for _ in paths], [], []
         for _page, path in enumerate(paths):
             progress(_page, len(paths))
             try:
                 xml, layout[_page] = _read_page(path, full_score)
+                if full_score and _page < len(structures):
+                    recovery.extend({"page": _page, **entry} for entry in _recover_missing_staffs(xml, layout[_page], path, structures[_page]))
             except Exception as e:  # e.g. a title page: "No staffs found"
                 print(f"page {_page + 1} skipped: {e}", file=sys.stderr)
                 skipped.append(_page + 1)
@@ -361,6 +455,9 @@ def scan(paths, progress=lambda done, total: None, full_score=False):
         field = ET.SubElement(ET.SubElement(merged.find("identification"), "miscellaneous"), "miscellaneous-field")
         field.set("name", "staff-layout")
         field.text = json.dumps(layout)
+        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery)]:
+            field = ET.SubElement(merged.find("identification/miscellaneous"),"miscellaneous-field",name=name)
+            field.text = json.dumps(value)
         if skipped:
             omitted = ET.SubElement(merged.find("identification/miscellaneous"), "miscellaneous-field")
             omitted.set("name", "unread-pages")

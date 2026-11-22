@@ -32,6 +32,40 @@ export function identifyInstruments(text) {
   return found.includes('bassclarinet') ? found.filter(id => id !== 'clarinet') : found
 }
 
+// Alternative parts list real choices in print order. Use the first as a visible
+// provisional assignment, rather than silently turning every ambiguous part into piano.
+export function preferredInstrument(text) {
+  const candidates=identifyInstruments(text)
+  const words={soprano:'soprano',alto:'alto',tenor:'tenor',baritone:'baritone',bass:'(?:string|double)\\s*bass',bassclarinet:'bass\\s*clarinet',horn:'horn'}
+  return candidates.map(id=>{const japanese=INSTRUMENTS.find(row=>row[0]===id)[1].replace(/^[^ァ-ヶ一-龥]+/u,'').replace(/（.*$/,'');return {id,index:Math.min(...[new RegExp(words[id]||id,'i').exec(text)?.index,text.indexOf(japanese)].filter(i=>i!=null&&i>=0),Infinity)}}).sort((a,b)=>a.index-b.index)[0]?.id||null
+}
+
+export function preferFocusedLabel(full,focused) {
+  const found=identifyInstruments(focused).length
+  return found>0&&found>=identifyInstruments(full).length||/drums|agogo|tambourine|sleigh\s*bells/i.test(focused)
+}
+
+export function inferredTranspose(id,writtenFifths,concertFifths) {
+  const expected=INSTRUMENTS.find(row=>row[0]===id)?.[3]
+  if(expected==null||!Number.isFinite(writtenFifths)||!Number.isFinite(concertFifths))return null
+  const mod=n=>((n%12)+12)%12
+  if(mod(writtenFifths*7+expected)===mod(concertFifths*7))return expected
+  if(mod(writtenFifths*7)===mod(concertFifths*7))return 0
+  return null
+}
+
+export function partStaffIndex(part,staffs,page) {
+  const count=Math.max(1,Number(part.querySelector('staves')?.textContent||1)),votes=new Map()
+  for(const note of part.querySelectorAll('note[id]')) {
+    const at=/-p(\d+)-(\d+)-(\d+)$/.exec(note.id)
+    if(!at||+at[1]!==page)continue
+    const y=+at[3],nearest=staffs.map((s,i)=>({i,d:Math.max(s[1]-y,y-s[3],0)})).sort((a,b)=>a.d-b.d)[0]
+    if(nearest)votes.set(nearest.i,(votes.get(nearest.i)||0)+1)
+  }
+  const ranked=[...votes].sort((a,b)=>b[1]-a[1]).slice(0,count)
+  return ranked.length?Math.min(...ranked.map(([i])=>i)):null
+}
+
 const set = (doc, parent, tag, text) => {
   let el = [...parent.children].find(x => x.tagName === tag)
   if (!el) { el = doc.createElement(tag); parent.append(el) }
@@ -50,6 +84,8 @@ export function partSettings(doc) {
     const part = [...doc.querySelectorAll('score-partwise > part')].find(p => p.id === meta.id)
     const shift = part?.querySelector('transpose')
     return { id: meta.id, name: meta.querySelector('part-name')?.textContent || `パート ${index+1}`,
+      sourceLabel:meta.querySelector('miscellaneous-field[name="instrument-label"]')?.textContent||meta.querySelector('part-name')?.textContent||'',
+      instrumentId:Object.entries(MUSESCORE_INSTRUMENTS).find(([,v])=>v[1]===meta.querySelector('instrument-sound')?.textContent)?.[0]||null,
       program: Number(meta.querySelector('midi-program')?.textContent || 1),
       transpose: Number(shift?.querySelector('chromatic')?.textContent || 0) + 12 * Number(shift?.querySelector('octave-change')?.textContent || 0) }
   })
@@ -115,14 +151,21 @@ export function namePartsFromText(doc, text, { preservePiano = false } = {}) {
     let label = ''
     if (note) {
       const page = Number(note[1]), y = Number(note[3]), staffs = layout[page] || []
-      const nearest = staffs.map((s,i) => ({ s,i,d: Math.max(s[1]-y, y-s[3],0) })).sort((a,b) => a.d-b.d)[0]
+      const staffIndex=partStaffIndex(part,staffs,page)
+      const nearest=staffIndex==null?null:{s:staffs[staffIndex],i:staffIndex}
       if (nearest) {
         const { s,i } = nearest
         const count = Math.max(1, Number(part.querySelector('attributes > staves')?.textContent || 1))
         const last = Math.min(i + count - 1, staffs.length - 1)
         const top = i ? (staffs[i-1][3]+s[1])/2 : s[1]-(s[3]-s[1])
         const bottom = staffs[last+1] ? (staffs[last][3]+staffs[last+1][1])/2 : staffs[last][3]+(s[3]-s[1])
-        const words = (text[page] || []).filter(t => t.x+t.w < s[0]+(s[3]-s[1])/4 && t.y-t.h/2 > top && t.y-t.h/2 < bottom).sort((a,b) => Math.abs(a.y-b.y)>Math.max(a.h,b.h)*0.6 ? a.y-b.y : a.x-b.x)
+        const focused=(text[page]||[]).filter(t=>t.instrumentStaff>=i+1&&t.instrumentStaff<=last+1)
+        const focusedText=focused.map(t=>t.str).join(' ')
+        const inRegion=t=>t.x+t.w<s[0]+(s[3]-s[1])/4&&t.y-t.h/2>top&&t.y-t.h/2<bottom
+        const full=(text[page]||[]).filter(t=>!t.instrumentStaff&&inRegion(t))
+        const useFocused=preferFocusedLabel(full.map(t=>t.str).join(' '),focusedText)
+        const source=useFocused?focused:full
+        const words = source.filter(inRegion).sort((a,b) => Math.abs(a.y-b.y)>Math.max(a.h,b.h)*0.6 ? a.y-b.y : a.x-b.x)
         const raw = words.map(t => t.str).join(' ')
         if (identifyInstruments(raw).length || /drums|agogo|tambourine|sleigh\s*bells|打楽器/i.test(raw)) label = raw
       }
@@ -130,15 +173,38 @@ export function namePartsFromText(doc, text, { preservePiano = false } = {}) {
     // An OMR-generated Piano label is also a guess, not evidence of instrument identity.
     if (label) {
       set(doc, meta, 'part-name', label); candidates.set(meta.id, label)
+      let identification=meta.querySelector(':scope > identification')
+      if(!identification){identification=doc.createElement('identification');meta.prepend(identification)}
+      let miscellaneous=identification.querySelector('miscellaneous')
+      if(!miscellaneous){miscellaneous=doc.createElement('miscellaneous');identification.append(miscellaneous)}
+      let source=miscellaneous.querySelector('miscellaneous-field[name="instrument-label"]')
+      if(!source){source=doc.createElement('miscellaneous-field');source.setAttribute('name','instrument-label');miscellaneous.append(source)}
+      source.textContent=label
       const guessed = identifyInstruments(label)
+      const preferred=preferredInstrument(label)
       const current = partSettings(doc).find(p => p.id === meta.id)
-      applyPartSettings(doc, meta.id, { name: label, program: guessed.length === 1 ? INSTRUMENTS.find(x => x[0] === guessed[0])[2] : 1, transpose: current.transpose })
+      applyPartSettings(doc, meta.id, { name: MUSESCORE_INSTRUMENTS[preferred]?.[0]||label, instrumentId:preferred, program: preferred ? INSTRUMENTS.find(x => x[0] === preferred)[2] : current.program, transpose: current.transpose })
     }
     else if ((preservePiano ? /^voice$/i : /^(voice|piano)$/i).test(meta.querySelector('part-name')?.textContent?.trim() || '')) {
       const current = partSettings(doc).find(p => p.id === meta.id)
       applyPartSettings(doc, meta.id, { name: `パート ${index+1}（楽器未確認）`, program: 1, transpose: current.transpose })
     }
     meta.querySelectorAll('part-abbreviation, part-name-display, part-abbreviation-display').forEach(el => el.remove())
+  }
+  if(text.some(page=>page.length)) {
+    const reference=new Map()
+    for(const setting of partSettings(doc)) {
+      const id=setting.instrumentId,known=INSTRUMENTS.find(row=>row[0]===id)
+      const part=[...doc.querySelectorAll('score-partwise > part')].find(p=>p.id===setting.id)
+      const key=part.querySelector('key > fifths')
+      if(known&&known[3]===0&&key)reference.set(Number(key.textContent),(reference.get(Number(key.textContent))||0)+1)
+    }
+    const ranked=[...reference].sort((a,b)=>b[1]-a[1])
+    if(ranked[0]&&(!ranked[1]||ranked[0][1]>ranked[1][1]))for(const setting of partSettings(doc)) {
+      const part=[...doc.querySelectorAll('score-partwise > part')].find(p=>p.id===setting.id),key=part.querySelector('key > fifths')
+      const amount=key?inferredTranspose(setting.instrumentId,Number(key.textContent),ranked[0][0]):null
+      if(amount!=null)applyPartSettings(doc,setting.id,{...setting,transpose:amount})
+    }
   }
   return candidates
 }

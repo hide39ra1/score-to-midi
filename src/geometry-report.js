@@ -72,5 +72,6 @@ export function inspectGeometry(doc,structures=readGeometry(doc)) {
     for(const staff of structure?.staves||[]) if(!observed.has(`${page}/${staff.id}`)) warnings.push({kind:'unread-staff',page,sourcePage:structure.sourcePage||page+1,staff:staff.id,message:`原稿${structure.sourcePage||page+1}ページの第${staff.id}五線に対応する音符・休符がありません`})
   })
   symbols.sort((a,b)=>a.page-b.page||(a.system??0)-(b.system??0)||(a.measure??0)-(b.measure??0)||a.x-b.x||a.y-b.y)
-  return {version:1,source:'image-geometry + homr symbol anchors',structures,symbols,warnings}
+  const metadata=name=>{try{return JSON.parse(doc.querySelector(`miscellaneous-field[name="${name}"]`)?.textContent||'[]')}catch{return []}}
+  return {version:1,source:'image-geometry + homr symbol anchors',structures,symbols,warnings,recognitionReview:metadata('recognition-review-v1'),staffRecovery:metadata('staff-recovery-v1')}
 }

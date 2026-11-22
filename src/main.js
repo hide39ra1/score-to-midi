@@ -1,6 +1,6 @@
 import { annotate, tokens } from './annotate.js'
 import { loadPages } from './input.js'
-import { ocr } from './ocr.js'
+import { ocr,ocrInstrumentLabels } from './ocr.js'
 import { Player } from './player.js'
 import { Score, verovio } from './score.js'
 import { inspectScore } from './quality.js'
@@ -107,7 +107,7 @@ async function scan(files) {
   // Copies go to the worker; the originals stay here for the side-by-side view.
   started = performance.now()
   configureRecognizer($('hardware').value)
-  worker.postMessage({ pages: pages.map((p) => p.png), layout: $('layout').value,mode:$('hardware').value, port: bridgePort }, bridgePort ? [bridgePort] : [])
+  worker.postMessage({ pages: pages.map((p) => p.png), structures:pages.map(p=>p.structure),layout: $('layout').value,mode:$('hardware').value, port: bridgePort }, bridgePort ? [bridgePort] : [])
   bridgePort = null // handed over with the first scan
 }
 
@@ -184,7 +184,11 @@ async function open(xml, recognize = true) {
   progress('文字を読み込み中…', 1, 1)
   if (recognize) {
     const text = (await readText()).map(tokens)
-    namePartsFromText(score.doc, text)
+    const labels=await Promise.all(pages.map(async(page,index)=>{
+      progress(`楽器名を拡大して確認中… ${index+1}/${pages.length}`)
+      try{return await ocrInstrumentLabels(page)}catch{return []}
+    }))
+    namePartsFromText(score.doc, text.map((items,index)=>[...items,...labels[index]]))
     annotateDirections(score.doc,text)
     const result = annotate(score.doc, text)
     // Engine placeholders and author guesses are not a verified title.
@@ -246,8 +250,8 @@ function renderParts() {
       const option = document.createElement('option'); option.value = id; option.textContent = title; instrument.append(option)
     }
     // Selection is a suggestion only; the original transpose remains unchanged until applied.
-    const guesses = identifyInstruments(part.name)
-    instrument.value = guesses.length === 1 && INSTRUMENTS.find(x => x[0] === guesses[0])[2] === part.program ? guesses[0] : 'unset'
+    const guesses = identifyInstruments(part.sourceLabel||part.name)
+    instrument.value = part.instrumentId || (guesses.length === 1 && INSTRUMENTS.find(x => x[0] === guesses[0])[2] === part.program ? guesses[0] : 'unset')
     instrument.options[0].textContent = `未設定・その他（現在GM ${part.program}）`
     const transpose = document.createElement('input'); transpose.type = 'number'; transpose.min = -36; transpose.max = 36; transpose.value = part.transpose; transpose.setAttribute('aria-label', `${index+1}番の移調（半音）`)
     const apply = document.createElement('button'); apply.textContent = '選択楽器の移調を適用'
@@ -267,7 +271,12 @@ function renderParts() {
       const selected = INSTRUMENTS.find(x => x[0] === instrument.value)
       transpose.value = selected[3]; commit(selected[2])
     }
-    row.append(label,name,instrument,transpose,apply); return row
+    row.append(label,name,instrument,transpose,apply)
+    const hint=document.createElement('small');hint.style.gridColumn='2 / -1'
+    hint.textContent=`原稿の楽器名候補: ${part.sourceLabel||'未取得'}`+(guesses.length>1?'／併記された代替楽器です。自動処理では先頭候補を仮割当します。実際に使う楽器へ変更できます。':'')
+    if(/drums|agogo|tambourine|sleigh\s*bells|打楽器/i.test(part.sourceLabel))hint.textContent+='／打楽器の音色・リズムの自動割当ては未対応です。'
+    row.append(hint)
+    return row
   }))
 }
 
@@ -337,6 +346,9 @@ function drawGeometry() {
   const failed=structures.filter(p=>p?.error).length
   $('geometry-summary').textContent=staffCount?`画像から${staffCount}組の五線・${barCount}本の小節線候補を検出。${geometryReport.symbols.length}個の音符・休符の座標を照合しました。`:'五線を検出できませんでした。原稿のない編集再開時は、保存された解析情報だけを表示します。'
   if(failed) $('geometry-summary').textContent+=` ${failed}ページで構造解析に失敗しています。`
+  const recovered=geometryReport.staffRecovery.filter(item=>item.notes),matched=geometryReport.recognitionReview.reduce((n,item)=>n+(item.matched||0),0)
+  if(recovered.length)$('quality').textContent+=` 欠落五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+item.notes,0)}音符を回復しました。`
+  if(matched)$('geometry-summary').textContent+=` ${matched}音符の推定位置を符頭検出と対応付けて補正しました。丸印は認識結果の位置であり、音高・音価が正しいという判定ではありません。`
   $('geometry-warnings').replaceChildren(...geometryReport.warnings.map(w=>{const li=document.createElement('li');li.textContent=w.message;return li}))
   $('toggle-structure').disabled=!pages.length||!staffCount
   $('save-analysis').disabled=!staffCount
