@@ -6,7 +6,7 @@ export class Player {
   #context = null
   #master = null
 
-  /** Read notes and timing from the toolkit's current score. Returns the MIDI file (base64). */
+  /** Read notes and timing from the toolkit's current score. Returns separate MIDI bytes for notation and performance. */
   load(tk,doc) {
     // Verovio engraves simile measures but omits their sounding notes from MIDI.
     // Our MusicXML already contains the expanded notes; render those for playback.
@@ -15,7 +15,7 @@ export class Player {
       playback.querySelectorAll('measure-style').forEach(style=>{if(style.querySelector('measure-repeat'))style.remove()})
       tk.loadData(new XMLSerializer().serializeToString(playback))
     }
-    const midi = tk.renderToMIDI()
+    const notationMidi = Uint8Array.from(atob(tk.renderToMIDI()), c => c.charCodeAt(0))
     const tracks=new Map();let slot=0
     for(const part of doc.querySelectorAll('score-partwise > part')) {tracks.set(part.id,slot);slot+=Number(part.querySelector('staves')?.textContent||1)}
     const specifications=[]
@@ -29,9 +29,7 @@ export class Player {
         if(note)specifications.push({track:tracks.get(note.closest('part').id)+Number(note.querySelector('staff')?.textContent||1)-1,quarter,pitch,...policy})
         return {id,t,pitch,dur:duration*policy.gate,velocity:Math.min(127,80+policy.boost)}
       })
-    const performed=performMidi(Uint8Array.from(atob(midi),c=>c.charCodeAt(0)),specifications)
-    let binary='';for(let i=0;i<performed.length;i+=32768)binary+=String.fromCharCode(...performed.subarray(i,i+32768))
-    return btoa(binary)
+    return { notationMidi, performanceMidi: performMidi(notationMidi, specifications) }
   }
 
   get playing() {

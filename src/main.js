@@ -70,7 +70,7 @@ let pages = [] // the scanned pages: {png, url, width, height, text}
 let score = null
 let removedScanTempos = 0
 let selected = null // id of the selected note
-let midi = '' // base64, kept current for the MIDI download
+let midi = null
 let started = 0 // when the current scan began
 let inputName = ''
 let geometryReport=null
@@ -599,7 +599,11 @@ function updateSaveName() {
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', exportForMuseScore(score.doc))
 $('save-analysis').onclick=()=>download(`${fileName()}_解析.json`,'application/json',JSON.stringify({...geometryReport,notation:inspectSymbols(score.doc),notationReview:symbolReview(score.doc)},null,2))
 $('save-midi').onclick = () => {
-  try { download(`${fileName()}.mid`, 'audio/midi', separateMidiTracks(Uint8Array.from(atob(midi), (c) => c.charCodeAt(0)))) }
+  try {
+    const performed = $('midi-performance').checked
+    const bytes = performed ? midi.performanceMidi : midi.notationMidi
+    download(`${fileName()}${performed ? '_演奏用' : ''}.mid`, 'audio/midi', separateMidiTracks(bytes))
+  }
   catch (e) { $('save-status').textContent = `MIDIを保存できませんでした: ${e.message}`; $('parts-panel').open = true }
 }
 $('again').onclick = () => {
