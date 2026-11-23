@@ -53,11 +53,16 @@ async function imagePage(file) {
 /** All pages of the given files, in order: [{png, url, width, height, text}]. */
 export async function loadPages(files, onProgress = () => {}, range = { from: 1, to: Infinity }) {
   const pages = []
-  for (const file of files) {
-    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
-    if (isPdf) for await (const page of pdfPages(file, range)) { page.sourceFile=file.name;onProgress(pages.push(page)) }
-    else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(file.name)) {const page=await imagePage(file);page.sourceFile=file.name;page.sourcePage=1;onProgress(pages.push(page))}
-    else throw new Error('PDFまたは画像ファイルを選んでください。')
+  try {
+    for (const file of files) {
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
+      if (isPdf) for await (const page of pdfPages(file, range)) { page.sourceFile=file.name;onProgress(pages.push(page)) }
+      else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(file.name)) {const page=await imagePage(file);page.sourceFile=file.name;page.sourcePage=1;onProgress(pages.push(page))}
+      else throw new Error('PDFまたは画像ファイルを選んでください。')
+    }
+  } catch (error) {
+    for (const page of pages) URL.revokeObjectURL(page.url)
+    throw error
   }
   return pages
 }

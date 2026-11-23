@@ -30,6 +30,8 @@ body[data-view=start] #start, body[data-view=busy] #busy { display: flex; flex-d
 body[data-view=work] #work { display: flex; }
 
 #drop { display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(620px, 100%); padding: 56px 24px; border: 2px dashed var(--line); border-radius: 14px; background: var(--panel); cursor: pointer; text-align: center; transition: border-color .15s; }
+#files { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#drop:focus-within { outline: 3px solid var(--accent); outline-offset: 3px; }
 #drop strong { font: 600 26px Georgia, serif; }
 #drop span { color: var(--muted); }
 #drop:hover, body.dragging #drop { border-color: var(--accent); }

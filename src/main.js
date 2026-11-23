@@ -80,19 +80,38 @@ window.sheetscan = { get xml() { return score?.xml }, seconds: null, bridge: nul
 
 // ---------- scanning ----------
 
+function beginSavedScore() {
+  pages.forEach(page => URL.revokeObjectURL(page.url))
+  pages = []
+  $('thumbs').replaceChildren()
+  $('detail').textContent = ''
+  $('hardware-status').textContent = ''
+  $('unsupported').hidden = true
+  show('busy')
+  progress('保存した譜面を読み込んでいます…')
+}
+
 async function scan(files) {
   if (!files.length || document.body.dataset.view === 'busy') return
-  inputName = files[0].name
-  if (files.length === 1 && /\.(musicxml|xml)$/i.test(files[0].name)) {
-    player.stop()
-    pages.forEach(p => URL.revokeObjectURL(p.url)); pages = []
-    try { await open(await files[0].text(), false) } catch (e) { fail(e.message) }
-    return
+  const xmlFiles = files.filter(file => /\.(musicxml|xml)$/i.test(file.name))
+  if (xmlFiles.length && files.length !== 1) {
+    return fail('MusicXMLは1ファイルずつ選択してください。')
   }
   const from = Number($('page-from').value)
   const to = $('page-to').value ? Number($('page-to').value) : Infinity
-  if (!Number.isInteger(from) || from < 1 || to < from || (to !== Infinity && !Number.isInteger(to))) return fail('ページ範囲を正しく指定してください。')
+  const includesPdf = files.some(file => file.type === 'application/pdf' || /\.pdf$/i.test(file.name))
+  if (includesPdf && (!Number.isInteger(from) || from < 1 || to < from || (to !== Infinity && !Number.isInteger(to)))) {
+    return fail('ページ範囲を正しく指定してください。')
+  }
+
+  inputName = files[0].name
+  player.stop()
   $('unsupported').hidden = true
+  if (xmlFiles.length) {
+    beginSavedScore()
+    try { await open(await files[0].text(), false) } catch (error) { fail(error.message) }
+    return
+  }
   $('detail').textContent = ''
   pages.forEach((p) => URL.revokeObjectURL(p.url))
   pages = []
@@ -249,7 +268,17 @@ function saveDraft() {
   } catch { $('save-status').textContent = 'ブラウザーに保存できません。MusicXMLを保存してください。' }
 }
 $('resume').onclick = async () => {
-  try { const xml = localStorage.getItem(DRAFT_KEY); if (xml) { pages = []; inputName = ''; await open(xml, false) } } catch (e) { fail(e.message) }
+  if (document.body.dataset.view !== 'start') return
+  try {
+    const xml = localStorage.getItem(DRAFT_KEY)
+    if (!xml) {
+      $('resume').hidden = true
+      return fail('再開できる編集結果が見つかりません。')
+    }
+    inputName = ''
+    beginSavedScore()
+    await open(xml, false)
+  } catch (error) { fail(error.message) }
 }
 
 function renderParts() {
@@ -594,7 +623,8 @@ function download(name, type, content) {
 let unnamedFileName = unknownTitle()
 const fileName = () => safeFileName(score.title) || unnamedFileName
 function updateSaveName() {
-  $('save-name').textContent = `保存名: ${fileName()}.mid / ${fileName()}.musicxml`
+  const midiSuffix = $('midi-performance').checked ? '_演奏用' : ''
+  $('save-name').textContent = `保存名: ${fileName()}${midiSuffix}.mid / ${fileName()}.musicxml`
 }
 $('save-xml').onclick = () => download(`${fileName()}.musicxml`, 'application/vnd.recordare.musicxml+xml', exportForMuseScore(score.doc))
 $('save-analysis').onclick=()=>download(`${fileName()}_解析.json`,'application/json',JSON.stringify({...geometryReport,notation:inspectSymbols(score.doc),notationReview:symbolReview(score.doc)},null,2))
@@ -615,15 +645,27 @@ $('toggle-scan').onclick = () => {
   if (score) draw()
 }
 
-$('files').onchange = (e) => scan([...e.target.files])
+$('files').onchange = (event) => {
+  const files = [...event.target.files]
+  event.target.value = ''
+  scan(files)
+}
+$('midi-performance').onchange = updateSaveName
 if (query.has('test')) {
   const sample = document.createElement('button'); sample.id = 'sample'; sample.textContent = '開発用サンプル認識'
   sample.onclick = async () => scan([new File([await (await fetch('sample.png')).blob()], 'sample.png')])
   $('start').append(sample)
 }
-addEventListener('dragover', (e) => (e.preventDefault(), document.body.classList.add('dragging')))
+addEventListener('dragover', (event) => {
+  if (!event.dataTransfer.types.includes('Files')) return
+  event.preventDefault()
+  const busy = document.body.dataset.view === 'busy'
+  event.dataTransfer.dropEffect = busy ? 'none' : 'copy'
+  document.body.classList.toggle('dragging', !busy)
+})
 addEventListener('dragleave', () => document.body.classList.remove('dragging'))
 addEventListener('drop', (e) => {
+  if (!e.dataTransfer.types.includes('Files')) return
   e.preventDefault()
   document.body.classList.remove('dragging')
   scan([...e.dataTransfer.files])
