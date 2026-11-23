@@ -53,6 +53,108 @@ function retainStaff(doc, part, number) {
   }
 }
 
+// A page can fuse two separately assigned parts. Restore the second staff
+// only when its image lane is claimed by one part and that part has an
+// explicit recognition gap at the same measure.
+export function restoreMergedStaffPages(doc, pages) {
+  const field = doc.querySelector('miscellaneous-field[name="page-measures-v1"]')
+  if (!field) return 0
+  let ranges
+  try { ranges = JSON.parse(field.textContent) } catch { return 0 }
+  if (!Array.isArray(ranges)) return 0
+  const parts = [...doc.querySelectorAll('score-partwise > part')]
+  const measures = part => [...part.querySelectorAll(':scope > measure')]
+  const staffNumber = note => Number(note.querySelector(':scope > staff')?.textContent || 1)
+  const lane = (notes, staffCount) => {
+    const votes = new Map()
+    let total = 0
+    for (const note of notes) {
+      if (!note.querySelector('pitch, unpitched')) continue
+      const position = /-p(\d+)-(\d+)-(\d+)$/.exec(note.id)
+      if (!position) continue
+      const geometry = pages[+position[1]]?.structure
+      if (!geometry || geometry.staves.length !== staffCount) continue
+      const location = locateSymbol(geometry, +position[2], +position[3])
+      if (!location || location.ambiguous || location.staff > staffCount) continue
+      votes.set(location.staff, (votes.get(location.staff) || 0) + 1)
+      total++
+    }
+    const [winner, count] = [...votes].sort((a,b) => b[1]-a[1])[0] || []
+    return count >= 4 && count / total >= .9 ? winner : null
+  }
+  const gap = measure => !!measure?.querySelector('note[id^="recognition-gap-"]')
+  const divisionsAt = (items, end) => {
+    let divisions = 1
+    for (const measure of items.slice(0, end + 1)) {
+      for (const entry of measure.querySelectorAll('attributes > divisions')) divisions = Number(entry.textContent)
+    }
+    return divisions
+  }
+  const setDivisions = (measure, value) => {
+    let attrs = measure.querySelector(':scope > attributes')
+    if (!attrs) {
+      attrs = el(doc, 'attributes')
+      measure.prepend(attrs)
+    }
+    if (!attrs.querySelector('divisions')) attrs.prepend(el(doc, 'divisions', value))
+  }
+  let restored = 0
+  const filledPages = new Set()
+  for (const part of parts) {
+    const source = measures(part)
+    if (Number(source[0]?.querySelector('staves')?.textContent || 1) > 1) continue // a multi-staff part from the start
+    const secondary = source.flatMap(m => [...m.querySelectorAll('note')]).filter(n => staffNumber(n) === 2)
+    if (!secondary.length || [...part.querySelectorAll('note')].some(n => staffNumber(n) > 2)) continue
+    const plans = []
+    for (const {page, start, count} of ranges) {
+      const staffCount = pages[page]?.structure?.staves.length || 0
+      const section = source.slice(start, start + count)
+      const lower = section.flatMap(m => [...m.querySelectorAll('note')]).filter(n => staffNumber(n) === 2)
+      if (!lower.length) continue
+      const wanted = lane(lower, staffCount)
+      const primary = lane(section.flatMap(m => [...m.querySelectorAll('note')]).filter(n => staffNumber(n) === 1), staffCount)
+      if (!wanted || !primary || wanted === primary) continue
+      const targets = parts.filter(other => other !== part && !other.querySelector('staves') &&
+        lane(other.querySelectorAll('note'), staffCount) === wanted &&
+        measures(other).slice(start, start + count).length === count &&
+        measures(other).slice(start, start + count).every(gap))
+      if (targets.length === 1) plans.push({page, start, count, target: targets[0], lower})
+    }
+    // Resolve every affected page before changing the staff declarations.
+    if (plans.reduce((total, plan) => total + plan.lower.length, 0) !== secondary.length) continue
+    for (const {page, start, count, target} of plans) {
+      const destination = measures(target)
+      const resume = divisionsAt(destination, start + count - 1)
+      const extracted = el(doc, 'part')
+      extracted.append(...source.slice(start, start + count).map(m => m.cloneNode(true)))
+      // Unnumbered clef/key/transpose belong to the primary lane. The target
+      // already has its own settings, so only move explicitly numbered ones.
+      extracted.querySelectorAll('attributes > clef:not([number]), attributes > key:not([number]), attributes > transpose:not([number])')
+        .forEach(node => node.remove())
+      retainStaff(doc, extracted, 2)
+      const replacement = measures(extracted)
+      setDivisions(replacement[0], divisionsAt(source, start))
+      for (const [index, measure] of replacement.entries()) {
+        measure.querySelectorAll('note > instrument').forEach(node => node.remove())
+        destination[start + index].replaceWith(measure)
+      }
+      if (destination[start + count]) setDivisions(destination[start + count], resume)
+      restored += replacement.length
+      filledPages.add(`${ranges.findIndex(range => range.page === page)}/${target.id}`)
+    }
+    retainStaff(doc, part, 1)
+  }
+  const alignment = doc.querySelector('miscellaneous-field[name="page-alignment-v1"]')
+  if (alignment && filledPages.size) {
+    try {
+      const rows = JSON.parse(alignment.textContent)
+      alignment.textContent = JSON.stringify(rows.filter(row =>
+        row.kind !== 'missing-part' || !filledPages.has(`${row.pageIndex}/${row.part}`)))
+    } catch {}
+  }
+  return restored
+}
+
 // OCR identifies the drum lane independently of the recognizer's grand-staff grouping.
 export function separateRecognizedDrums(doc, pages, labels) {
   const drumStaffs = pages.map((page, index) => findDrumStaffs(page, labels[index] || []))

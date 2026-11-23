@@ -8,11 +8,11 @@ import { inspectScore } from './quality.js'
 import { INSTRUMENTS, partSettings, namePartsFromText, identifyInstruments, routeParts } from './instruments.js'
 import { separateMidiTracks } from './midi.js'
 import { sourceTitle, safeFileName, unknownTitle } from './title.js'
-import {storeGeometry,inspectGeometry} from './geometry-report.js'
+import {storeGeometry,inspectGeometry,readGeometry} from './geometry-report.js'
 import {staffY,allStaves} from './structure.js'
-import {applyPercussion,separateRecognizedDrums,findDrumStaffs} from './percussion.js'
+import {applyPercussion,separateRecognizedDrums,findDrumStaffs,restoreMergedStaffPages} from './percussion.js'
 import {normalizeTies,collectTiePairs,inspectTies,tieCandidates} from './ties.js'
-import {exportForMuseScore,normalizeRecognizedClefs} from './musescore.js'
+import {exportForMuseScore,removeRepeatedScoreAttributes} from './musescore.js'
 import {MARKS,DYNAMICS,annotateDirections,inspectSymbols,listNoteSymbols,symbolReview,attributeContext,parseMeter,normalizeSymbolStructure,applyImageArticulations} from './symbols.js'
 
 const $ = (id) => document.getElementById(id)
@@ -204,6 +204,8 @@ async function open(xml, recognize = true) {
   slurRepair = normalizeSymbolStructure(score.doc)
   await ensureGeometry()
   if(pages.length) storeGeometry(score.doc,pages.map(page=>page.structure))
+  const sourcePages = pages.length ? pages : readGeometry(score.doc).map(structure => ({structure}))
+  restoreMergedStaffPages(score.doc, sourcePages)
   selected = null
   progress('文字を読み込み中…', 1, 1)
   if (recognize) {
@@ -215,7 +217,6 @@ async function open(xml, recognize = true) {
     const instrumentText = text.map((items, index) => [...items, ...labels[index]])
     const drumParts = separateRecognizedDrums(score.doc, pages, instrumentText)
     namePartsFromText(score.doc, instrumentText)
-    normalizeRecognizedClefs(score.doc)
     progress('打楽器の一線譜・小節反復を照合中…')
     const percussion=[]
     for(const [page,image] of pages.entries()) {
@@ -252,6 +253,9 @@ async function open(xml, recognize = true) {
     }
     applyImageArticulations(score.doc,reviews)
     symbolReview(score.doc,reviews)
+  }
+  if (recognize || score.doc.querySelector('miscellaneous-field[name="recognition-version"]')) {
+    removeRepeatedScoreAttributes(score.doc)
   }
   routeParts(score.doc)
   $('title').value = score.title

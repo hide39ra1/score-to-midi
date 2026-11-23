@@ -13,6 +13,7 @@ export const MUSESCORE_INSTRUMENTS={
 // one part ends before the others. Never invent missing pitches or durations.
 export function exportForMuseScore(source) {
   const doc = source.cloneNode(true)
+  if (doc.querySelector('miscellaneous-field[name="recognition-version"]')) removeRepeatedScoreAttributes(doc)
   const parts = [...doc.querySelectorAll('score-partwise > part')]
   const count = Math.max(0, ...parts.map(p => p.querySelectorAll(':scope > measure').length))
   for (const part of parts) {
@@ -31,33 +32,42 @@ export function exportForMuseScore(source) {
 }
 
 
-// Repair clef changes only on scanned, single-staff parts whose instrument
-// establishes the expected clef. Retain octave markings and all sounding pitches.
-const fixedClefs = Object.fromEntries([
-  ...['flute','piccolo','oboe','clarinet','bassclarinet','soprano','alto','tenor','baritone','trumpet','glockenspiel','violin'].map(id => [id, ['G', '2']]),
-  ['viola', ['C', '3']],
-].map(([id, clef]) => [MUSESCORE_INSTRUMENTS[id][1], clef]))
+// Page-by-page OMR repeats the current clef, key and meter at each page start.
+// Carry their musical state per staff so only genuine state changes survive.
+const staffAttributes = new Set(['clef', 'key', 'time'])
+function attributeSignature(element, root = true) {
+  const attributes = [...element.attributes]
+    .filter(attribute => !root || attribute.name !== 'number')
+    .map(attribute => [attribute.name, attribute.value])
+    .sort(([a], [b]) => a.localeCompare(b))
+  const children = [...element.children].map(child => attributeSignature(child, false))
+  return JSON.stringify([element.tagName, attributes, children.length ? children : element.textContent.trim()])
+}
 
-export function normalizeRecognizedClefs(doc) {
-  const parts = new Map([...doc.querySelectorAll('score-partwise > part')].map(part => [part.id, part]))
-  let repaired = 0
-  for (const meta of doc.querySelectorAll('score-part')) {
-    const part = parts.get(meta.id)
-    const expected = fixedClefs[meta.querySelector('instrument-sound')?.textContent]
-    if (!expected || !part || Number(part.querySelector('staves')?.textContent || 1) !== 1) continue
-    for (const clef of part.querySelectorAll('attributes > clef')) {
-      const sign = clef.querySelector('sign')
-      const line = clef.querySelector('line')
-      if (!sign || (sign.textContent === expected[0] && line?.textContent === expected[1])) continue
-      sign.textContent = expected[0]
-      if (line) line.textContent = expected[1]
-      else {
-        const newLine = doc.createElement('line')
-        newLine.textContent = expected[1]
-        sign.after(newLine)
+export function removeRepeatedScoreAttributes(doc) {
+  let removed = 0
+  for (const part of doc.querySelectorAll('score-partwise > part')) {
+    const states = new Map()
+    for (const attributes of part.querySelectorAll('measure > attributes')) {
+      for (const item of [...attributes.children]) {
+        const name = item.tagName
+        if (!staffAttributes.has(name)) continue
+        if (!states.has(name)) states.set(name, new Map())
+        const values = states.get(name)
+        const staff = item.getAttribute('number') || (name === 'clef' ? '1' : '*')
+        const signature = attributeSignature(item)
+        const previous = values.get(staff) ?? (staff !== '*' ? values.get('*') : undefined)
+        const sameForAll = staff !== '*' || [...values.values()].every(value => value === signature)
+        if (previous === signature && sameForAll) {
+          item.remove()
+          removed++
+          continue
+        }
+        if (staff === '*') values.clear()
+        values.set(staff, signature)
       }
-      repaired++
+      if (!attributes.children.length && !attributes.attributes.length) attributes.remove()
     }
   }
-  return repaired
+  return removed
 }
