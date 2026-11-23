@@ -69,6 +69,7 @@ for (const id of ['page-from','page-to','layout','hardware']) $(id).addEventList
 let pages = [] // the scanned pages: {png, url, width, height, text}
 let score = null
 let removedScanTempos = 0
+let slurRepair = {removed: 0, renumbered: 0}
 let selected = null // id of the selected note
 let midi = null
 let started = 0 // when the current scan began
@@ -200,7 +201,7 @@ async function open(xml, recognize = true) {
   unnamedFileName = unknownTitle()
   score = new Score(xml)
   removedScanTempos = removeLegacyScanTempos(score.doc)
-  normalizeSymbolStructure(score.doc)
+  slurRepair = normalizeSymbolStructure(score.doc)
   await ensureGeometry()
   if(pages.length) storeGeometry(score.doc,pages.map(page=>page.structure))
   selected = null
@@ -363,6 +364,9 @@ async function draw() {
   $('play').disabled = true
   const report = inspectScore(score.doc)
   $('quality').textContent = `${report.parts}パート・${report.notes}音符。` + (report.warnings.length ? `拍数・小節数の確認候補 ${report.warnings.length}件: ${report.warnings.slice(0, 8).join('、')}。弱起・カデンツァなど正しい例外も含まれます。` : '拍数の不一致は検出されませんでした。音高・移調・声部は原稿と照合してください。')
+  if (slurRepair.removed || slurRepair.renumbered) {
+    $('quality').textContent += ` スラーの番号重複を${slurRepair.renumbered}組修正し、対応する端点がない記号を${slurRepair.removed}件除去しました。`
+  }
   if (removedScanTempos) $('quality').textContent += ` 旧版で認識されたテンポ範囲外の記号を${removedScanTempos}件除去しました。`
   const unread = score.doc.querySelector('miscellaneous-field[name="unread-pages"]')?.textContent
   if (unread) $('quality').textContent += ` 認識できなかったページ（選択範囲内の順番）: ${unread}。出力には含まれていません。`

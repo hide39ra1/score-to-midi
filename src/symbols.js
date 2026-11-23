@@ -10,6 +10,65 @@ function notation(note) {
   if(!el){el=make(note.ownerDocument,'notations');note.insertBefore(el,note.querySelector(':scope > lyric, :scope > play, :scope > listen'))}
   return el
 }
+// Recognition can reuse number 1 before the preceding slur closes.
+export function planSlurRepair(events) {
+  const open = new Map()
+  const pairs = []
+  const unmatched = []
+  for (const [index, event] of events.entries()) {
+    const key = JSON.stringify([event.number, event.staff, event.voice])
+    if (event.type === 'start') {
+      if (!open.has(key)) open.set(key, [])
+      open.get(key).push(index)
+    } else if (event.type === 'stop') {
+      const start = open.get(key)?.pop()
+      if (start === undefined) unmatched.push(index)
+      else pairs.push({start, end: index})
+    }
+  }
+  for (const starts of open.values()) unmatched.push(...starts)
+  const active = []
+  for (const pair of pairs.sort((a, b) => a.start - b.start)) {
+    const used = new Set(active.filter(other => other.end >= pair.start).map(other => other.number))
+    let number = Number(events[pair.start].number) || 1
+    if (used.has(number)) {
+      number = 1
+      while (used.has(number)) number++
+    }
+    pair.number = number
+    active.push(pair)
+  }
+  return {pairs, unmatched}
+}
+
+function repairRecognizedSlurs(doc) {
+  let removed = 0
+  let renumbered = 0
+  if (!doc.querySelector('miscellaneous-field[name="recognition-version"]')) return {removed, renumbered}
+  for (const part of doc.querySelectorAll('score-partwise > part')) {
+    // Continuation marks can carry layout across systems and need separate handling.
+    const marks = [...part.querySelectorAll('note > notations > slur')]
+    if (marks.some(mark => mark.getAttribute('type') === 'continue')) continue
+    const events = marks.map(mark => {
+      const note = mark.closest('note')
+      return {type: mark.getAttribute('type'), number: mark.getAttribute('number') || '1',
+        staff: note.querySelector('staff')?.textContent || '1', voice: note.querySelector('voice')?.textContent || '1'}
+    })
+    const {pairs, unmatched} = planSlurRepair(events)
+    for (const {start, end, number} of pairs) {
+      if (Number(events[start].number) === number) continue
+      marks[start].setAttribute('number', number)
+      marks[end].setAttribute('number', number)
+      renumbered++
+    }
+    for (const index of unmatched) {
+      marks[index].remove()
+      removed++
+    }
+  }
+  return {removed, renumbered}
+}
+
 export function normalizeSymbolStructure(doc) {
   for(const el of doc.querySelectorAll('notations > articulations > mordent')) {
     const old=el.parentNode,parent=old.parentNode
@@ -17,6 +76,7 @@ export function normalizeSymbolStructure(doc) {
     if(!ornaments){ornaments=make(doc,'ornaments');parent.append(ornaments)}
     ornaments.append(el);if(!old.children.length)old.remove()
   }
+  return repairRecognizedSlurs(doc)
 }
 export function toggleMark(note,tag) {
   if(!MARKS[tag]||!note.querySelector(tag==='fermata'?'pitch,unpitched,rest':'pitch,unpitched')) return false
