@@ -479,8 +479,13 @@ def _recover_missing_staffs(xml, boxes, path, structure):
                     note.set("id", note.get("id")[:match.start()]+f"-p{_page}-{int(match[2])+left}-{int(match[3])+top}")
             retry_fit=first_fit(part,staff)
             retry_whole_fit=measure_fit(part,staff)
+            expected=staff.get('measureCount',len(staff.get('boundaries',[]))-1)
+            restores_count=(existing is not None and expected>0 and
+                            len(existing.findall('measure'))!=expected and len(part.findall('measure'))==expected and
+                            retry_whole_fit is not None and retry_whole_fit>=.90 and
+                            (whole_fit is None or retry_whole_fit>=whole_fit-.02))
             improved=(retry_whole_fit is not None and whole_fit is not None and retry_whole_fit>whole_fit+.01) or (retry_fit is not None and fit is not None and retry_fit>fit+.01 and (whole_fit is None or retry_whole_fit is None or retry_whole_fit>=whole_fit))
-            if existing is not None and not improved:
+            if existing is not None and not (improved or restores_count):
                 recovered.append({"staff":staff['id'],"error":"小節の位置整合が改善しなかったため再認識結果を採用しませんでした"})
                 continue
             meta = retry.find("part-list/score-part")

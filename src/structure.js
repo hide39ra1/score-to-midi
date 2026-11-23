@@ -236,5 +236,5 @@ export function locateSymbol(structure,x,y) {
   if(!options.length||options[0].distance>options[0].staff.spacing*4) return null
   const {staff,bottom,distance}=options[0]
   const measure=Math.min(staff.measureCount,Math.max(1,staff.boundaries.findIndex(boundary=>boundary>x)))
-  return {staff:staff.id,system:staff.system,measure,staffStep:Math.round((bottom-y)/(staff.spacing/2)),nearBar:staff.bars.some(bar=>Math.abs(x-bar.x)<staff.spacing*.5),ambiguous:distance>staff.spacing*2||!!options[1]&&Math.abs(options[1].distance-distance)<staff.spacing*.3}
+  return {staff:staff.id,system:staff.system,measure,staffStep:Math.round((bottom-y)/(staff.spacing/2)),nearBar:staff.boundaries.some(boundary=>Math.abs(x-boundary)<staff.spacing*.5),ambiguous:distance>staff.spacing*2||!!options[1]&&Math.abs(options[1].distance-distance)<staff.spacing*.3}
 }

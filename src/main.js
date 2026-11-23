@@ -408,7 +408,25 @@ function drawGeometry() {
   if(retriesFailed)$('quality').textContent+=` 再試行で改善を確認できない五線が${retriesFailed}組あります。`
   if(recovered.length)$('quality').textContent+=` 五線${recovered.length}組を再認識し、${recovered.reduce((n,item)=>n+(item.addedNotes??item.notes),0)}音符を追加しました。途中の小節位置・小節数の不整合も再試行の対象です。`
   if(matched)$('geometry-summary').textContent+=` ${matched}音符の推定位置を符頭検出と対応付けて補正しました。丸印は認識結果の位置であり、音高・音価が正しいという判定ではありません。`
-  $('geometry-warnings').replaceChildren(...[...geometryReport.warnings.map(w=>w.message),...geometryReport.percussion.warnings].map(message=>{const li=document.createElement('li');li.textContent=message;return li}))
+  const warnings = [
+    ...geometryReport.warnings,
+    ...geometryReport.percussion.warnings.map(message => ({message})),
+  ]
+  $('geometry-warnings').replaceChildren(...warnings.map(warning => {
+    const item = document.createElement('li')
+    item.textContent = warning.message
+    for (const [index, id] of (warning.ids || []).entries()) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.textContent = `記号 ${index + 1} を表示`
+      button.onclick = () => {
+        if (pages.length) setSourceVisible(true)
+        select(id, true)
+      }
+      item.append(' ', button)
+    }
+    return item
+  }))
   $('toggle-structure').disabled=!pages.length||!staffCount
   $('save-analysis').disabled=!staffCount
   const svgNS='http://www.w3.org/2000/svg'

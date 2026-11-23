@@ -155,6 +155,17 @@ export function rhythmGrid(doc,structures) {
     }
   }
   const offsets=new Map([...starts].map(([page,values])=>{const counts=new Map();for(const v of values)counts.set(v,(counts.get(v)||0)+1);return [page,[...counts].sort((a,b)=>b[1]-a[1])[0][0]]}))
+  // Full-score assembly already records the exact XML start of each page.
+  // Adopt it only where the image and XML agree on the number of bars.
+  try {
+    const field = doc.querySelector('miscellaneous-field[name="page-measures-v1"]')
+    for (const range of JSON.parse(field?.textContent || '[]')) {
+      const staffs = structures[range.page]?.staves || []
+      if (staffs.length && staffs.every(staff => staff.measureCount === range.count)) {
+        offsets.set(range.page, range.start)
+      }
+    }
+  } catch {}
   const onsetAt=(page,measure,x,spacing)=>{
     const samples=(points.get(`${page}/${measure}`)||[]).filter(p=>Number.isFinite(p.onset)&&p.onset>=0).sort((a,b)=>Math.abs(a.x-x)-Math.abs(b.x-x))
     if(!samples.length)return null
@@ -169,15 +180,38 @@ export function rhythmGrid(doc,structures) {
 
 function repeatMeasure(doc,part,index,record,report) {
   const measures=[...part.querySelectorAll(':scope > measure')],measure=measures[index],previous=measures[index-1]
-  if(!measure||!previous||!previous.querySelector('note > pitch, note > unpitched')){report.warnings.push(`${part.id}: 前小節を取得できず反復を保留しました`);return false}
-  const pitched=measure.querySelectorAll('note > pitch,note > unpitched').length
-  if(pitched>1)return false
-  for(const child of [...measure.children])if(['note','backup','forward'].includes(child.tagName))child.remove()
-  let count=0
-  for(const child of previous.children)if(['note','backup','forward'].includes(child.tagName)) {
-    const copy=child.cloneNode(true)
-    for(const note of copy.tagName==='note'?[copy]:[])note.id=`repeat-${part.id}-${index}-${++count}`
-    measure.append(copy)
+  const events = [...(previous?.children || [])].filter(child => ['note','backup','forward'].includes(child.tagName))
+  const missing = events.some(event => /^(recognition-gap-|unread-)/.test(event.id))
+  const usable = previous?.querySelector('note > pitch, note > unpitched, note > rest[measure="yes"]')
+  const warn = reason => {
+    report.warnings.push(`原稿${record.sourcePage ?? record.page + 1}ページ ${part.id} 第${measure?.getAttribute('number') || index + 1}小節：${reason}`)
+    return false
+  }
+  if (!measure || !usable || missing) return warn('前小節の認識結果を確認できず、反復を保留しました')
+  if (measure.querySelectorAll('note > pitch,note > unpitched').length > 1) {
+    return warn('反復記号と認識済み音符が重なっています')
+  }
+  const divisionsAt = end => {
+    let value = 1
+    for (let i = 0; i <= end; i++) {
+      for (const item of measures[i].querySelectorAll(':scope > attributes > divisions')) value = Number(item.textContent)
+    }
+    return value
+  }
+  const scale = divisionsAt(index) / divisionsAt(index - 1)
+  const copies = events.map(event => event.cloneNode(true))
+  if (!Number.isFinite(scale) || scale <= 0 || copies.some(event => {
+    const duration = event.querySelector(':scope > duration')
+    return duration && !Number.isInteger(Number(duration.textContent) * scale)
+  })) return warn('前小節と音価の分解能が異なり、反復を保留しました')
+  for (const child of [...measure.children]) if (['note','backup','forward'].includes(child.tagName)) child.remove()
+  let count = 0
+  const rightBar = measure.querySelector(':scope > barline[location="right"]')
+  for (const copy of copies) {
+    const duration = copy.querySelector(':scope > duration')
+    if (duration) duration.textContent = Number(duration.textContent) * scale
+    if (copy.tagName === 'note') copy.id = `repeat-${part.id}-${index}-${++count}`
+    measure.insertBefore(copy, rightBar)
   }
   // MusicXML contains sounding notes as well as the measure-repeat engraving.
   let attr=measure.querySelector('attributes');if(!attr){attr=el(doc,'attributes');measure.prepend(attr)}
@@ -238,7 +272,7 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
     const offset=grid.offsets.get(page);if(offset==null)continue
     for(const [measureIndex,data] of lane.measures.entries()) {
       const index=offset+measureIndex,m=entry.part.querySelectorAll(':scope > measure')[index];if(!m)continue
-      if(data.repeat){repeatMeasure(doc,entry.part,index,{page,staff:lane.staff,measure:measureIndex,x:(data.left+data.right)/2,y:staff.top},report);continue}
+      if(data.repeat){repeatMeasure(doc,entry.part,index,{page,sourcePage:structures[page]?.sourcePage,staff:lane.staff,measure:measureIndex,x:(data.left+data.right)/2,y:staff.top},report);continue}
       m.querySelectorAll('note,backup,forward').forEach(n=>n.remove());let cursor=0,number=0
       // A complete beamed pattern supplies its own timing. Other parts' OMR
       // anchors can drift; they must not erase clearly detected percussion heads.
@@ -296,7 +330,7 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
       const offset=grid.offsets.get(page);if(offset==null)continue
       const measure=part.querySelectorAll(':scope > measure')[offset+record.measure]
       const positions=[...(measure?.querySelectorAll('note[id]')||[])].map(n=>/-p(\d+)-(\d+)-(\d+)$/.exec(n.id)).filter(Boolean)
-      if(positions.some(at=>+at[1]===page&&locateSymbol(structures[page],+at[2],+at[3])?.staff===record.staff))repeatMeasure(doc,part,offset+record.measure,{...record,page},report)
+      if(positions.some(at=>+at[1]===page&&locateSymbol(structures[page],+at[2],+at[3])?.staff===record.staff))repeatMeasure(doc,part,offset+record.measure,{...record,page,sourcePage:structures[page]?.sourcePage},report)
     }
     part.querySelectorAll('attributes > clef, attributes > key, attributes > transpose, attributes > time').forEach(n=>n.remove())
     const first=part.querySelector('measure > attributes');if(first){const clef=el(doc,'clef'),time=el(doc,'time');time.append(el(doc,'beats',beats),el(doc,'beat-type',unit));clef.append(el(doc,'sign','percussion'));first.append(time,clef);const rank=['divisions','key','time','staves','part-symbol','instruments','clef','staff-details','transpose','measure-style'];for(const c of [...first.children].sort((a,b)=>rank.indexOf(a.tagName)-rank.indexOf(b.tagName)))first.append(c)}
