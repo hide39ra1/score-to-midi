@@ -292,6 +292,19 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
     for(const [measureIndex,data] of lane.measures.entries()) {
       const index=offset+measureIndex,m=entry.part.querySelectorAll(':scope > measure')[index];if(!m)continue
       if(data.repeat){repeatMeasure(doc,entry.part,index,{page,sourcePage:structures[page]?.sourcePage,staff:lane.staff,measure:measureIndex,x:(data.left+data.right)/2,y:staff.top},report);continue}
+      if (data.wholeRoll) {
+        const {x, y} = data.wholeRoll
+        const note = el(doc, 'note', null, {id: `roll-${entry.part.id}-${index}-p${page}-${Math.round(x)}-${Math.round(y)}`})
+        note.append(el(doc, 'duration', Math.round(quarters * 16)), el(doc, 'type', 'whole'))
+        setUnpitched(doc, note, PERCUSSION[kind].pitches[0], entry.part, 'center')
+        const notation = el(doc, 'notations'), ornaments = el(doc, 'ornaments')
+        ornaments.append(el(doc, 'tremolo', 3, {type: 'single'}))
+        notation.append(ornaments)
+        note.append(notation)
+        m.querySelectorAll('note,backup,forward').forEach(node => node.remove())
+        m.append(note)
+        continue
+      }
       if (data.wholeRest) {
         const {x, y} = data.wholeRest
         const note = el(doc, 'note', null, {id: `rest-${entry.part.id}-${index}-p${page}-${Math.round(x)}-${Math.round(y)}`})

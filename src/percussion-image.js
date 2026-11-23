@@ -110,6 +110,27 @@ export function detectOneLineMeasureRest(binary, staff, left, right, first = fal
   return null
 }
 
+export function detectOneLineRoll(binary, staff, left, right) {
+  const s = staff.spacing
+  for (let x = Math.ceil(left + s); x < left + (right - left) * .43; x++) {
+    const y = Math.round(staffY(staff, x, 0))
+    for (const shift of [0, -1, 1]) {
+      const center = y + shift
+      const rim = Math.round(s * .55)
+      if (![-rim, rim].every(dx => [-2, 2].some(dy => sample(binary, x + dx, center + dy)))) continue
+      if (![center - 3, center + 4].every(row => sample(binary, x, row))) continue
+      if ([-2, 2].every(dy => sample(binary, x, center + dy))) continue
+      const strokes = []
+      for (let row = center + Math.ceil(s * .7); row <= center + s * 2.6; row++) {
+        if (sample(binary, x, row)) strokes.push(row)
+      }
+      const groups = runs(strokes)
+      if (groups.length === 3 && groups.every(group => group.length >= 2 && group.length <= s * .7)) return {x, y: center}
+    }
+  }
+  return null
+}
+
 export function analyzePercussion(binary,structure,drumStaffs=[]) {
   const lanes=[],repeats=[],drumBars=[]
   for(const staff of allStaves(structure)) {
@@ -124,7 +145,9 @@ export function analyzePercussion(binary,structure,drumStaffs=[]) {
       if (staff.lineCount === 1) {
         const notes = repeat ? [] : detectOneLineNotes(binary, staff, left, right)
         const wholeRest = !repeat && !notes.length ? detectOneLineMeasureRest(binary, staff, left, right, i === 0) : null
-        measures.push({left, right, repeat: !!repeat, notes, wholeRest})
+        const roll = !repeat && !wholeRest ? detectOneLineRoll(binary, staff, left, right) : null
+        const wholeRoll = roll && notes.every(head => Math.abs(head.x - roll.x) < staff.spacing * 1.5) ? roll : null
+        measures.push({left, right, repeat: !!repeat, notes, wholeRest, wholeRoll})
       }
     }
     if(staff.lineCount===1)lanes.push({staff:staff.id,measures})

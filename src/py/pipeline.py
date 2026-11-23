@@ -422,7 +422,7 @@ def _recover_missing_staffs(xml, boxes, path, structure):
         bounds=staff.get('boundaries',[])
         if len(bounds)<2:return None
         matched=total=0
-        tolerance=staff['spacing']*1.5
+        tolerance=staff['spacing']*.5
         for index,measure in enumerate(part.findall('measure')):
             for note in measure.iter('note'):
                 match=re.search(r'-p(\d+)-(\d+)-(\d+)$',note.get('id',''))
@@ -439,6 +439,7 @@ def _recover_missing_staffs(xml, boxes, path, structure):
         center = (staff["top"]+staff["bottom"])/2
         covered=any(abs((box[1]+box[3])/2-center) < staff["spacing"]*2 for box in boxes)
         existing=None;fit=None;whole_fit=None
+        group_end = index
         if covered:
             has_part=False
             for candidate in xml.findall('part'):
@@ -449,23 +450,27 @@ def _recover_missing_staffs(xml, boxes, path, structure):
                 owns=sorted(staves,key=lambda s:abs((s['top']+s['bottom'])/2-y))[:count]
                 if staff in owns:
                     has_part=True
-                    if count!=1:continue
+                    indices = sorted(staves.index(owner) for owner in owns)
+                    if indices != list(range(index, index + count)):continue
                     fit=first_fit(candidate,staff)
                     whole_fit=measure_fit(candidate,staff)
                     expected=staff.get('measureCount',len(staff.get('boundaries',[]))-1)
                     inconsistent=expected>0 and len(candidate.findall('measure'))!=expected
-                    if (fit is not None and fit<.66) or (whole_fit is not None and (whole_fit<.85 or inconsistent)):
-                        existing=candidate;break
+                    if (fit is not None and fit<.66) or (whole_fit is not None and (whole_fit<1 or inconsistent)):
+                        existing=candidate
+                        group_end=indices[-1]
+                        break
             if existing is None and has_part:continue
         left = max(0, int(staff["left"]-staff["spacing"]*3))
         right = min(original.shape[1], int(staff["right"]+staff["spacing"]*2))
         top = max(0, int((staves[index-1]["bottom"]+staff["top"])/2 if index else staff["top"]-staff["spacing"]*6))
-        bottom = min(original.shape[0], int((staff["bottom"]+staves[index+1]["top"])/2 if index+1<len(staves) else staff["bottom"]+staff["spacing"]*6))
+        bottom = min(original.shape[0], int((staves[group_end]["bottom"]+staves[group_end+1]["top"])/2 if group_end+1<len(staves) else staves[group_end]["bottom"]+staff["spacing"]*6))
         crop_path = path+f"-staff-{index}.png"
         cv2.imwrite(crop_path, original[top:bottom, left:right])
         review_start = len(_recognition_review)
         try:
             retry, retry_boxes = _read_page(crop_path, True)
+            _fold_boundary_only_measures(retry, {"staves": [staff]})
             for review in _recognition_review[review_start:]:
                 review["unmatchedHeads"] = [[x+left,y+top] for x,y in review["unmatchedHeads"]]
                 review["retryStaff"] = staff["id"]
@@ -473,6 +478,8 @@ def _recover_missing_staffs(xml, boxes, path, structure):
             if len(parts) != 1 or not parts[0].findall(".//pitch"):
                 continue
             part = parts[0]
+            if int(part.findtext('.//staves','1')) != group_end-index+1:
+                continue
             for note in part.iter("note"):
                 match = re.search(r"-p(\d+)-(\d+)-(\d+)$", note.get("id", ""))
                 if match:
@@ -484,8 +491,9 @@ def _recover_missing_staffs(xml, boxes, path, structure):
                             len(existing.findall('measure'))!=expected and len(part.findall('measure'))==expected and
                             retry_whole_fit is not None and retry_whole_fit>=.90 and
                             (whole_fit is None or retry_whole_fit>=whole_fit-.02))
-            improved=(retry_whole_fit is not None and whole_fit is not None and retry_whole_fit>whole_fit+.01) or (retry_fit is not None and fit is not None and retry_fit>fit+.01 and (whole_fit is None or retry_whole_fit is None or retry_whole_fit>=whole_fit))
-            if existing is not None and not (improved or restores_count):
+            improved=(retry_whole_fit is not None and whole_fit is not None and retry_whole_fit>whole_fit) or (retry_fit is not None and fit is not None and retry_fit>fit+.01 and (whole_fit is None or retry_whole_fit is None or retry_whole_fit>=whole_fit))
+            keeps_material = existing is None or len(part.findall('.//pitch')) >= len(existing.findall('.//pitch'))*.95
+            if existing is not None and (not (improved or restores_count) or not keeps_material):
                 recovered.append({"staff":staff['id'],"error":"小節の位置整合が改善しなかったため再認識結果を採用しませんでした"})
                 continue
             meta = retry.find("part-list/score-part")
@@ -641,7 +649,7 @@ def scan(paths, progress=lambda done, total: None, full_score=False, geometry="[
         field = ET.SubElement(miscellaneous, "miscellaneous-field")
         field.set("name", "staff-layout")
         field.text = json.dumps(layout)
-        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery),("boundary-repair-v1", boundary_repairs),("recognition-version", "2026-11-23-percussion-repeats-8")]:
+        for name, value in [("recognition-review-v1", _recognition_review),("staff-recovery-v1", recovery),("boundary-repair-v1", boundary_repairs),("recognition-version", "2026-11-23-percussion-rolls-9")]:
             field = ET.SubElement(miscellaneous,"miscellaneous-field",name=name)
             field.text = json.dumps(value)
         if skipped:

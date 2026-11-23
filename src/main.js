@@ -390,7 +390,7 @@ async function draw() {
 
 function drawGeometry() {
   geometryReport=inspectGeometry(score.doc)
-  if(geometryReport.recognitionVersion!=='2026-11-23-percussion-repeats-8'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
+  if(geometryReport.recognitionVersion!=='2026-11-23-percussion-rolls-9'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
   if(geometryReport.pageAlignment.length)$('quality').textContent+=` ページ間のパート対応に${geometryReport.pageAlignment.length}件の欠落・未割当てがあります。空欄と原稿を確認してください。`
   if(geometryReport.warnings.length) $('quality').textContent+=` 五線・小節の構造照合で${geometryReport.warnings.length}件の確認候補があります。`
   const structures=geometryReport.structures
