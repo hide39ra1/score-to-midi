@@ -2,7 +2,7 @@ import {allStaves,staffY} from './structure.js'
 const runs=values=>{const out=[];for(const v of values){const last=out.at(-1);if(last&&v<=last.at(-1)+1)last.push(v);else out.push([v])}return out}
 const sample=(b,x,y)=>{x=Math.round(x);y=Math.round(y);return x>=0&&x<b.width&&y>=0&&y<b.height?b.ink[y*b.width+x]:0}
 
-export function detectMeasureRepeat(binary,staff,left,right) {
+export function detectMeasureRepeat(binary,staff,left,right,{first=false}={}) {
   const s=staff.spacing,mid=(left+right)/2,cy=(staffY(staff,mid,0)+staffY(staff,mid))/2
   const isLine=(x,y)=>staff.lines.some((_,i)=>Math.abs(y-staffY(staff,x,i))<=Math.max(.7,s*.12))
   const ink=(x,y)=>!isLine(x,y)&&sample(binary,x,y)
@@ -19,10 +19,10 @@ export function detectMeasureRepeat(binary,staff,left,right) {
     }
     return seen.size>=1&&Math.abs((minX+maxX)/2-x)<s*.35&&Math.abs((minY+maxY)/2-y)<s*.35
   }
-  for(let dx=-s;dx<=s;dx+=Math.max(1,s*.25))for(let dy=-s*.7;dy<=s*.7;dy+=Math.max(1,s*.25)) {
+  for(let dx=-s;dx<=(first?Math.max(s,(right-left)*.18):s);dx+=Math.max(1,s*.25))for(let dy=-s*.7;dy<=s*.7;dy+=Math.max(1,s*.25)) {
     const x=mid+dx,y=cy+dy
-    for(const offset of [.45,.65,.85]) {
-      if(!dot(x-s*offset,y-s*offset)||!dot(x+s*offset,y+s*offset))continue
+    for (const offset of [.45,.65,.85]) for (const rise of [.45,.65,.85]) {
+      if(!dot(x-s*offset,y-s*rise)||!dot(x+s*offset,y+s*rise))continue
       let hits=0,total=0
       for(let i=-8;i<=8;i++) {const px=x+i*s*.085,py=y-i*s*.085;if(isLine(px,py))continue;total++;if([-1,0,1].some(d=>sample(binary,px+d,py)))hits++}
       if(total>=5&&hits/total>=.8)return {x,y,confidence:hits/total}
@@ -80,18 +80,52 @@ export function detectOneLineNotes(binary,staff,left,right) {
   }).filter(Boolean)
 }
 
+// A whole-measure rest on a one-line staff is a short rectangle immediately
+// below the line, with no other ink in the central portion of the measure.
+export function detectOneLineMeasureRest(binary, staff, left, right, first = false) {
+  const spacing = staff.spacing
+  const mid = (left + right) / 2
+  const start = Math.ceil(mid - spacing * 2)
+  const end = Math.floor(mid + ((right-left) * (first ? .18 : .12)))
+  const candidates = []
+  for (let x = start; x <= end; x++) {
+    const line = staffY(staff, x, 0)
+    if ([.23, .36].every(offset => sample(binary, x, line + spacing * offset))) candidates.push(x)
+  }
+  for (const run of runs(candidates)) {
+    if (run.length < spacing * .65 || run.length > spacing * 1.8) continue
+    const x = run[Math.floor(run.length / 2)]
+    const y = staffY(staff, x, 0)
+    let outside = 0
+    for (let col = Math.ceil(left + (right-left) * .23); col < right - spacing * 3; col++) {
+      const line = staffY(staff, col, 0)
+      for (let row = Math.round(line - spacing * 2); row <= line + spacing * 2; row++) {
+        if (Math.abs(row - line) <= 1.1) continue
+        if (col >= run[0] - 1 && col <= run.at(-1) + 1 && row > line && row < line + spacing * .65) continue
+        outside += sample(binary, col, row)
+      }
+    }
+    if (outside <= spacing * 2.5) return {x, y}
+  }
+  return null
+}
+
 export function analyzePercussion(binary,structure,drumStaffs=[]) {
   const lanes=[],repeats=[],drumBars=[]
   for(const staff of allStaves(structure)) {
     const measures=[]
     for(let i=0;i<staff.boundaries.length-1;i++) {
-      const left=staff.boundaries[i],right=staff.boundaries[i+1],repeat=detectMeasureRepeat(binary,staff,left,right)
+      const left=staff.boundaries[i],right=staff.boundaries[i+1],repeat=detectMeasureRepeat(binary,staff,left,right,{first:i===0})
       if(repeat)repeats.push({...repeat,staff:staff.id,measure:i})
       if (!repeat && drumStaffs.includes(staff.id)) {
         const heads = detectDrumSixteenths(binary, staff, left, right)
         if (heads) drumBars.push({staff: staff.id, measure: i, heads})
       }
-      if(staff.lineCount===1)measures.push({left,right,repeat:!!repeat,notes:repeat?[]:detectOneLineNotes(binary,staff,left,right)})
+      if (staff.lineCount === 1) {
+        const notes = repeat ? [] : detectOneLineNotes(binary, staff, left, right)
+        const wholeRest = !repeat && !notes.length ? detectOneLineMeasureRest(binary, staff, left, right, i === 0) : null
+        measures.push({left, right, repeat: !!repeat, notes, wholeRest})
+      }
     }
     if(staff.lineCount===1)lanes.push({staff:staff.id,measures})
   }

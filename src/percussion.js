@@ -198,18 +198,37 @@ function repeatMeasure(doc,part,index,record,report) {
     }
     return value
   }
-  const scale = divisionsAt(index) / divisionsAt(index - 1)
-  const copies = events.map(event => event.cloneNode(true))
-  if (!Number.isFinite(scale) || scale <= 0 || copies.some(event => {
+  const sourceDivisions = divisionsAt(index - 1)
+  const targetDivisions = divisionsAt(index)
+  if (![sourceDivisions, targetDivisions].every(value => Number.isSafeInteger(value) && value > 0)) {
+    return warn('音価の分解能を確認できず、反復を保留しました')
+  }
+  const gcd = (a, b) => b ? gcd(b, a % b) : a
+  const scale = targetDivisions / sourceDivisions
+  const needsRefinement = events.some(event => {
     const duration = event.querySelector(':scope > duration')
-    return duration && !Number.isInteger(Number(duration.textContent) * scale)
-  })) return warn('前小節と音価の分解能が異なり、反復を保留しました')
+    return duration && (Number(duration.textContent) * targetDivisions) % sourceDivisions !== 0
+  })
+  if (needsRefinement) {
+    // Refine the unit of the whole part, preserving the length of every event.
+    const factor = sourceDivisions / gcd(sourceDivisions, targetDivisions)
+    let attributes = measures[0].querySelector(':scope > attributes')
+    if (!attributes) {
+      attributes = el(doc, 'attributes')
+      measures[0].prepend(attributes)
+    }
+    if (!attributes.querySelector(':scope > divisions')) attributes.prepend(el(doc, 'divisions', 1))
+    for (const value of part.querySelectorAll('attributes > divisions, note > duration, backup > duration, forward > duration, direction > offset, harmony > offset')) {
+      value.textContent = Number(value.textContent) * factor
+    }
+  }
+  const copies = events.map(event => event.cloneNode(true))
   for (const child of [...measure.children]) if (['note','backup','forward'].includes(child.tagName)) child.remove()
   let count = 0
   const rightBar = measure.querySelector(':scope > barline[location="right"]')
   for (const copy of copies) {
     const duration = copy.querySelector(':scope > duration')
-    if (duration) duration.textContent = Number(duration.textContent) * scale
+    if (duration) duration.textContent = Math.round(Number(duration.textContent) * scale)
     if (copy.tagName === 'note') copy.id = `repeat-${part.id}-${index}-${++count}`
     measure.insertBefore(copy, rightBar)
   }
@@ -273,6 +292,15 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
     for(const [measureIndex,data] of lane.measures.entries()) {
       const index=offset+measureIndex,m=entry.part.querySelectorAll(':scope > measure')[index];if(!m)continue
       if(data.repeat){repeatMeasure(doc,entry.part,index,{page,sourcePage:structures[page]?.sourcePage,staff:lane.staff,measure:measureIndex,x:(data.left+data.right)/2,y:staff.top},report);continue}
+      if (data.wholeRest) {
+        const {x, y} = data.wholeRest
+        const note = el(doc, 'note', null, {id: `rest-${entry.part.id}-${index}-p${page}-${Math.round(x)}-${Math.round(y)}`})
+        note.append(el(doc, 'rest', null, {measure: 'yes'}), el(doc, 'duration', Math.round(quarters * 16)))
+        m.querySelectorAll('note,backup,forward').forEach(node => node.remove())
+        m.append(note)
+        continue
+      }
+      if (!data.notes.length) continue
       m.querySelectorAll('note,backup,forward').forEach(n=>n.remove());let cursor=0,number=0
       // A complete beamed pattern supplies its own timing. Other parts' OMR
       // anchors can drift; they must not erase clearly detected percussion heads.
@@ -294,6 +322,10 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
   }
   // Apply simile marks only to identified percussion parts, never to a pitched
   // whole note or rest which happens to resemble the same image template.
+  const kitIds = new Set(drumParts)
+  for (const meta of doc.querySelectorAll('score-part')) {
+    if (percussionKind(meta.querySelector('part-name')?.textContent || '') === 'drums') kitIds.add(meta.id)
+  }
   for(const part of doc.querySelectorAll('score-partwise > part')) {
     const meta=[...doc.querySelectorAll('score-part')].find(m=>m.id===part.id)
     if(!drumParts.has(part.id)&&percussionKind(meta.querySelector('part-name')?.textContent||'')!=='drums')continue
@@ -330,7 +362,12 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
       const offset=grid.offsets.get(page);if(offset==null)continue
       const measure=part.querySelectorAll(':scope > measure')[offset+record.measure]
       const positions=[...(measure?.querySelectorAll('note[id]')||[])].map(n=>/-p(\d+)-(\d+)-(\d+)$/.exec(n.id)).filter(Boolean)
-      if(positions.some(at=>+at[1]===page&&locateSymbol(structures[page],+at[2],+at[3])?.staff===record.staff))repeatMeasure(doc,part,offset+record.measure,{...record,page,sourcePage:structures[page]?.sourcePage},report)
+      const owned = positions.some(at => +at[1] === page &&
+        locateSymbol(structures[page], +at[2], +at[3])?.staff === record.staff)
+      const drumLanes = findDrumStaffs(pages[page], labels[page] || [])
+      const confirmed = drumLanes.size === 1 && drumLanes.has(record.staff) &&
+        kitIds.size === 1 && kitIds.has(part.id)
+      if (owned || confirmed) repeatMeasure(doc,part,offset+record.measure,{...record,page,sourcePage:structures[page]?.sourcePage},report)
     }
     part.querySelectorAll('attributes > clef, attributes > key, attributes > transpose, attributes > time').forEach(n=>n.remove())
     const first=part.querySelector('measure > attributes');if(first){const clef=el(doc,'clef'),time=el(doc,'time');time.append(el(doc,'beats',beats),el(doc,'beat-type',unit));clef.append(el(doc,'sign','percussion'));first.append(time,clef);const rank=['divisions','key','time','staves','part-symbol','instruments','clef','staff-details','transpose','measure-style'];for(const c of [...first.children].sort((a,b)=>rank.indexOf(a.tagName)-rank.indexOf(b.tagName)))first.append(c)}

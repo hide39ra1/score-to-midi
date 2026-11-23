@@ -1,7 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {analyzeBinary,detectSingleLineStaves,mergeStaffDetections} from '../src/structure.js'
-import {detectMeasureRepeat,detectOneLineNotes} from '../src/percussion-image.js'
+import {detectMeasureRepeat,detectOneLineNotes,detectOneLineMeasureRest} from '../src/percussion-image.js'
 import {percussionKind,drumPitch,findDrumStaffs} from '../src/percussion.js'
 import {readMidi} from '../src/performance.js'
 import {separateMidiTracks} from '../src/midi.js'
@@ -60,4 +60,21 @@ test('the drum label is assigned to its own physical staff, not neighboring Gloc
     {str: 'Glockenspiel', x: 5, y: 200, w: 80, h: 15},
     {str: 'Drum', x: 180, y: 190, w: 35, h: 15},
   ])], [21])
+})
+
+test('a shifted opening simile is recognized beyond the geometric center', () => {
+  const b = fixture()
+  const staff = detectSingleLineStaves(b, analyzeBinary(b, {fullScore: true}))[0]
+  for (let d = -8; d <= 8; d++) b.mark(98+d, 180-d)
+  for (const [x,y] of [[92,174],[104,186]]) for (let dx=0;dx<2;dx++) for (let dy=0;dy<2;dy++) b.mark(x+dx,y+dy)
+  assert.equal(detectMeasureRepeat(b, staff, 20, 140), null)
+  assert.ok(detectMeasureRepeat(b, staff, 20, 140, {first: true}))
+})
+
+test('a one-line full-measure rest requires a printed rectangle', () => {
+  const b = fixture()
+  const staff = detectSingleLineStaves(b, analyzeBinary(b, {fullScore: true}))[0]
+  assert.equal(detectOneLineMeasureRest(b, staff, 20, 140), null)
+  for (let y = 181; y <= 184; y++) for (let x = 75; x <= 85; x++) b.mark(x,y)
+  assert.equal(detectOneLineMeasureRest(b, staff, 20, 140)?.x, 80)
 })
