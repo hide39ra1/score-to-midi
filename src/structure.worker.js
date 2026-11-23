@@ -15,7 +15,7 @@ self.onmessage=async ({data})=>{
     const pixels=context.getImageData(0,0,canvas.width,canvas.height),binary=binarize(pixels)
     let result
     if(data.operation==='percussion') {
-      result=analyzePercussion(binary,data.structure)
+      result=analyzePercussion(binary,data.structure,data.drumStaffs)
     } else if(data.operation==='symbols') {
       result=[]
       for(const note of data.notes||[]) {

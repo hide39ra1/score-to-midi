@@ -187,11 +187,39 @@ function repeatMeasure(doc,part,index,record,report) {
   report.repeats.push({...record,part:part.id,index,notes:count});return true
 }
 
+function rebuildDrumBar(doc, part, measure, divisions, heads, page) {
+  for (const event of measure.querySelectorAll(':scope > note, :scope > backup, :scope > forward')) event.remove()
+  const rightBar = measure.querySelector(':scope > barline[location="right"]')
+  let index = 0
+  function appendHit(position, pitch, voice, type, duration, beam) {
+    const id = `drum-${part.id}-${measure.getAttribute('number')}-${++index}-p${page}-${position.x}-${position.y}`
+    const note = el(doc, 'note', null, {id})
+    note.append(el(doc, 'duration', duration), el(doc, 'voice', voice), el(doc, 'type', type))
+    setUnpitched(doc, note, pitch, part, position.step)
+    note.append(el(doc, 'stem', voice === 1 ? 'up' : 'down'))
+    if ([42, 49].includes(pitch)) note.append(el(doc, 'notehead', 'x'))
+    if (beam) for (const number of [1, 2]) note.append(el(doc, 'beam', beam, {number}))
+    measure.insertBefore(note, rightBar)
+  }
+  for (const [slot, head] of heads.entries()) {
+    const pitch = head.step === 5 ? 38 : head.step >= 9 ? 49 : 42
+    const beam = ['begin', 'continue', 'continue', 'end'][slot % 4]
+    appendHit(head, pitch, 1, '16th', divisions / 4, beam)
+  }
+  const backup = el(doc, 'backup')
+  backup.append(el(doc, 'duration', divisions * 4))
+  measure.insertBefore(backup, rightBar)
+  for (const head of heads) {
+    if (head.kick) appendHit(head.kick, 36, 2, 'quarter', divisions)
+  }
+}
+
 export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
   const structures=pages.map(p=>p.structure),grid=rhythmGrid(doc,structures),report={lanes:[],repeats:[],warnings:[]}
   analyses.forEach((analysis,page)=>{if(analysis?.error)report.warnings.push(`${page+1}ページ: 打楽器解析に失敗しました（${analysis.error}）`)})
   const maxMeasures=Math.max(0,...[...doc.querySelectorAll('score-partwise > part')].map(p=>p.querySelectorAll(':scope > measure').length))
   const beats=Number(doc.querySelector('part > measure attributes > time > beats')?.textContent||4),unit=Number(doc.querySelector('part > measure attributes > time > beat-type')?.textContent||4),quarters=beats*4/unit
+  const referenceMeasures = [...(doc.querySelector('score-partwise > part')?.querySelectorAll(':scope > measure') || [])]
   const percParts=new Map()
   for(const [page,analysis] of analyses.entries())for(const [laneIndex,lane] of (analysis?.lanes||[]).entries()) {
     const staff=structures[page].percussionStaves.find(s=>s.id===lane.staff)
@@ -241,6 +269,28 @@ export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
       const at=/-p(\d+)-(\d+)-(\d+)$/.exec(note.id);if(!at)continue
       const staff=allStaves(structures[+at[1]]).find(s=>s.id===locateSymbol(structures[+at[1]],+at[2],+at[3])?.staff)
       if(staff){const step=Math.round((staffY(staff,+at[2])-Number(at[3]))/(staff.spacing/2));setUnpitched(doc,note,drumPitch(step),part,step)}
+    }
+    const measures = [...part.querySelectorAll(':scope > measure')]
+    for (const [page, analysis] of analyses.entries()) {
+      const offset = grid.offsets.get(page)
+      if (offset == null) continue
+      for (const bar of analysis?.drumBars || []) {
+        const index = offset + bar.measure
+        const measure = measures[index]
+        if (!measure) continue
+        const anchored = [...measure.querySelectorAll('note[id]')].some(note => {
+          const at = /-p(\d+)-(\d+)-(\d+)$/.exec(note.id)
+          return at && +at[1] === page && locateSymbol(structures[page], +at[2], +at[3])?.staff === bar.staff
+        })
+        if (!anchored && !drumParts.has(part.id)) continue
+        const attrs = measures.slice(0, index + 1).flatMap(m => [...m.querySelectorAll('attributes')])
+        const divisions = Number(attrs.map(a => a.querySelector('divisions')).filter(Boolean).at(-1)?.textContent || 1)
+        const time = referenceMeasures.slice(0, index + 1).flatMap(m => [...m.querySelectorAll('attributes > time')]).at(-1)
+        const meter = time ? [time.querySelector('beats')?.textContent, time.querySelector('beat-type')?.textContent] : [String(beats), String(unit)]
+        if (meter.join('/') !== '4/4' || divisions % 4 !== 0) continue
+        rebuildDrumBar(doc, part, measure, divisions, bar.heads, page)
+        report.lanes.push({page, staff: bar.staff, kind: 'drums', part: part.id, measure: bar.measure, notes: bar.heads.length})
+      }
     }
     for(const [page,analysis] of analyses.entries())for(const record of analysis?.repeats||[]) {
       const offset=grid.offsets.get(page);if(offset==null)continue

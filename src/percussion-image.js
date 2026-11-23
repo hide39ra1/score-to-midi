@@ -80,16 +80,84 @@ export function detectOneLineNotes(binary,staff,left,right) {
   }).filter(Boolean)
 }
 
-export function analyzePercussion(binary,structure) {
-  const lanes=[],repeats=[]
+export function analyzePercussion(binary,structure,drumStaffs=[]) {
+  const lanes=[],repeats=[],drumBars=[]
   for(const staff of allStaves(structure)) {
     const measures=[]
     for(let i=0;i<staff.boundaries.length-1;i++) {
       const left=staff.boundaries[i],right=staff.boundaries[i+1],repeat=detectMeasureRepeat(binary,staff,left,right)
       if(repeat)repeats.push({...repeat,staff:staff.id,measure:i})
+      if (!repeat && drumStaffs.includes(staff.id)) {
+        const heads = detectDrumSixteenths(binary, staff, left, right)
+        if (heads) drumBars.push({staff: staff.id, measure: i, heads})
+      }
       if(staff.lineCount===1)measures.push({left,right,repeat:!!repeat,notes:repeat?[]:detectOneLineNotes(binary,staff,left,right)})
     }
     if(staff.lineCount===1)lanes.push({staff:staff.id,measures})
   }
-  return {lanes,repeats}
+  return {lanes,repeats,drumBars}
+}
+
+// Recover a bar of continuous sixteenths only when both the cross heads and
+// their two beams are visible. Each sixteenth is one slot, even with kick/snare.
+export function detectDrumSixteenths(binary, staff, left, right) {
+  const spacing = staff.spacing
+  const radius = Math.max(2, Math.round(spacing * .33))
+  const candidates = []
+  for (let x = Math.ceil(left + spacing); x < right - spacing; x++) {
+    for (const step of [5, 7, 8, 9, 10]) {
+      const y = Math.round(staffY(staff, x) - step * spacing / 2)
+      let diagonal = 0
+      let outside = 0
+      for (const vertical of [-1, 1]) for (const horizontal of [-1, 1]) {
+        if (sample(binary, x + horizontal * radius, y + vertical * radius) ||
+            sample(binary, x + horizontal * radius, y + vertical * (radius - 1))) diagonal++
+        outside += sample(binary, x + horizontal * (radius + 1), y + vertical * (radius - 1))
+      }
+      const snare = step === 5
+      if (!sample(binary, x, y) || (snare
+        ? ![-radius, radius].every(dx => sample(binary, x + dx, y)) || !sample(binary, x, y + 1)
+        : diagonal < 3 || outside > 3)) continue
+      const beams = []
+      for (const shift of [0, 1, 2, 3, 4]) for (const side of [-1, 1]) {
+        const stem = x + shift
+        const levels = []
+        for (let row = y - Math.round(spacing * 4.5); row < y - spacing * 1.5; row++) {
+          if ([1, 2, 3].every(n => sample(binary, stem + side * n, row))) levels.push(row)
+        }
+        const groups = runs(levels)
+        if (groups.length === 2 &&
+            groups.every(group => group.length <= spacing * .65) &&
+            groups[1][0] - groups[0][0] <= spacing * .9) {
+          const stemInk = Array.from({length: Math.floor(spacing)}, (_, n) =>
+            [-1, 0, 1].some(dx => sample(binary, stem + dx, y - radius - n))).filter(Boolean).length
+          if (stemInk >= Math.floor(spacing) * .8) beams.push(groups[0][0])
+        }
+      }
+      if (beams.length) candidates.push({x, y, step, score: snare ? 2 : diagonal - outside, beam: beams[0]})
+    }
+  }
+  const heads = []
+  for (const head of candidates.sort((a, b) => b.score - a.score)) {
+    if (!heads.some(other => Math.abs(other.x - head.x) < spacing * .85)) heads.push(head)
+  }
+  heads.sort((a, b) => a.x - b.x)
+  if (heads.length !== 16) return null
+  const gaps = heads.slice(1).map((head, i) => head.x - heads[i].x)
+  if (Math.max(...gaps) > Math.min(...gaps) * 2.4) return null
+
+  const filled = (head, step) => {
+    const y = Math.round(staffY(staff, head.x) - step * spacing / 2)
+    const horizontal = Math.max(2, Math.round(spacing * .36))
+    for (const dx of [0, 1, -1, 2, -2, 3, -3]) {
+      const x = head.x + dx
+      if ([-horizontal, 0, horizontal].every(offset => sample(binary, x + offset, y)) &&
+          [-1, 1].every(dy => sample(binary, x, y + dy))) return {x, y, step}
+    }
+    return null
+  }
+  const beats = heads.map((head, index) => ({
+    ...head, kick: index % 4 === 0 ? filled(head, 1) : null,
+  }))
+  return beats.filter(head => head.kick).length === 4 ? beats : null
 }
