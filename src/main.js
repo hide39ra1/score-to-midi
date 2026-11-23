@@ -253,8 +253,8 @@ async function open(xml, recognize = true) {
   $('title').value = score.title
   updateSaveName()
   $('scan').replaceChildren(...pages.map(scanPage))
-  document.body.classList.toggle('no-scan', !pages.length)
-  $('toggle-scan').disabled = !pages.length
+  setSourceVisible(pages.length > 0)
+  $('toggle-scan').hidden = !pages.length
   show('work')
   renderParts()
   await draw()
@@ -640,8 +640,13 @@ $('again').onclick = () => {
   player.stop()
   show('start')
 }
+function setSourceVisible(visible) {
+  document.body.classList.toggle('no-scan', !visible)
+  $('toggle-scan').setAttribute('aria-expanded', String(visible))
+  $('toggle-scan').textContent = visible ? '原稿を隠す' : '原稿を表示'
+}
 $('toggle-scan').onclick = () => {
-  document.body.classList.toggle('no-scan')
+  setSourceVisible(document.body.classList.contains('no-scan'))
   if (score) draw()
 }
 

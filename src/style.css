@@ -48,7 +48,12 @@ body[data-view=work] #work { display: flex; }
 #thumbs img.done { opacity: 1; }
 #thumbs img.now { opacity: 1; outline: 2px solid var(--accent); }
 
-#scan, #score { overflow: auto; padding: 14px; }
+#work { flex-direction: column; min-height: 0; }
+#review-panels { flex: 0 1 auto; max-height: 40%; overflow: auto; background: var(--panel); }
+#quality { margin: 0; padding: .5rem 1rem; background: #e0ebff; font-size: .875rem; }
+#review-panels details { padding: .4rem 1rem; border-bottom: 1px solid var(--line); font-size: .875rem; }
+#preview-panes { display: flex; flex: 1; min-width: 0; min-height: 0; }
+#scan, #score { min-width: 0; min-height: 0; overflow: auto; padding: 14px; }
 #scan { flex: 0 0 38%; border-right: 1px solid var(--line); }
 #score { flex: 1; }
 body.no-scan #scan { display: none; }
@@ -70,7 +75,7 @@ body.no-scan #scan { display: none; }
 #hint { color: var(--muted); font-size: 13px; }
 
 @media (max-width: 800px) {
-  #work { flex-direction: column; }
+  #preview-panes { flex-direction: column; }
   #scan { flex: 0 0 34%; border-right: 0; border-bottom: 1px solid var(--line); }
   #title { width: 12ch; }
 }
@@ -79,15 +84,9 @@ body.no-scan #scan { display: none; }
 .range { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
 .range input { width: 5.5rem; }
 select { font: inherit; padding: .5rem; max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--ink); }
-#work { position: relative; padding-top: 3.5rem; }
-#quality { position: absolute; top: 0; left: 0; right: 0; margin: 0; padding: .6rem 1rem; background: #e0ebff; font-size: .875rem; max-height: 3.5rem; overflow: auto; }
-#parts-panel { position: absolute; top: 3.5rem; left: 0; right: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); padding: .5rem 1rem; max-height: 65vh; overflow: auto; }
 #parts-panel summary { cursor: pointer; font-weight: 600; }
 #parts-panel p { font-size: .875rem; }
-#work { padding-top: 6.5rem; }
-#geometry-info { position: absolute; top: 6.5rem; left: 0; right: 0; padding: .4rem 1rem; background: var(--panel); z-index: 1; max-height: 55vh; overflow: auto; border-bottom: 1px solid var(--line); font-size: .875rem; }
 #geometry-info summary { cursor: pointer; }
-#work { padding-top: 9rem; }
 .structure-overlay { display: none !important; position: absolute; inset: 0; width: 100%; height: 100% !important; pointer-events: none; }
 .show-structure .structure-overlay { display: block !important; }
 .structure-overlay polyline,.structure-overlay line { fill: none; stroke-width: 2; }
@@ -99,9 +98,7 @@ select { font: inherit; padding: .5rem; max-width: 100%; border: 1px solid var(-
 .note-anchor { stroke: #00a45b; }.rest-anchor { stroke: #8947d8; }.symbol-mismatch { stroke: #df2638; stroke-width: 3; }
 .tie-arc-candidate { fill: none; stroke: #d88000; stroke-width: 2; stroke-dasharray: 5 3; }
 .repeat-anchor { fill: none; stroke: #b85500; stroke-width: 2; }
-#symbols-panel { position: absolute; top: 9rem; left: 0; right: 0; z-index: 3; max-height: 55vh; overflow: auto; padding: .4rem 1rem; background: #f4f7fb; border-bottom: 1px solid var(--line); font-size: .875rem; }
 #symbols-panel summary { cursor: pointer; font-weight: 600; }
-#work { padding-top: 11.5rem; }
 .symbol-editor { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; }
 .symbol-editor label { display: flex; flex-direction: column; gap: .2rem; }
 #symbol-review { max-height: 14rem; overflow: auto; }
