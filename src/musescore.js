@@ -18,6 +18,17 @@ export function exportForMuseScore(source) {
   const count = Math.max(0, ...parts.map(p => p.querySelectorAll(':scope > measure').length))
   for (const part of parts) {
     const measures = [...part.querySelectorAll(':scope > measure')]
+    let divisions = 1
+    let beats = 4
+    let beatType = 4
+    for (const attributes of part.querySelectorAll('measure > attributes')) {
+      divisions = Number(attributes.querySelector('divisions')?.textContent ?? divisions)
+      const time = attributes.querySelector('time')
+      if (time) {
+        beats = time.querySelector('beats')?.textContent.split('+').reduce((sum, n) => sum + Number(n), 0) ?? beats
+        beatType = Number(time.querySelector('beat-type')?.textContent ?? beatType)
+      }
+    }
     for (let i = measures.length; i < count; i++) {
       const measure = doc.createElement('measure')
       measure.setAttribute('number', String(i + 1))
@@ -25,7 +36,24 @@ export function exportForMuseScore(source) {
       const type = doc.createElement('direction-type')
       const words = doc.createElement('words')
       words.textContent = '認識欠落：原稿を確認してください'
-      type.append(words); direction.append(type); measure.append(direction); part.append(measure)
+      type.append(words)
+      direction.append(type)
+      measure.append(direction)
+      const duration = divisions * beats * 4 / beatType
+      if (Number.isFinite(duration) && duration > 0) {
+        const note = doc.createElement('note')
+        note.id = `recognition-gap-${part.id}-${i + 1}`
+        note.setAttribute('print-object', 'no')
+        const rest = doc.createElement('rest')
+        rest.setAttribute('measure', 'yes')
+        const length = doc.createElement('duration')
+        length.textContent = String(duration)
+        const noteType = doc.createElement('type')
+        noteType.textContent = 'whole'
+        note.append(rest, length, noteType)
+        measure.append(note)
+      }
+      part.append(measure)
     }
   }
   return new XMLSerializer().serializeToString(doc)

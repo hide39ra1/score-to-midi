@@ -569,14 +569,25 @@ def _merge_full_score_pages(records):
     def page_index(xml, fallback):
         return next((int(m[1]) for n in xml.iter('note') if (m:=re.search(r'-p(\d+)-(\d+)-(\d+)$',n.get('id','')))),fallback)
     # Pad page tails before appending the next page, preserving gaps as explicit warnings.
-    def pad(part,count):
+    def pad(part,count, reference=None):
         divisions,beats,unit=1,4,4
         for attributes in part.iter('attributes'):
             divisions=int(attributes.findtext('divisions',str(divisions)))
             time=attributes.find('time')
             if time is not None:
                 beats=sum(int(value) for value in time.findtext('beats',str(beats)).split('+'));unit=int(time.findtext('beat-type',str(unit)))
-        for _ in range(len(part.findall('measure')),count):
+        reference_meters = []
+        if reference is not None:
+            reference_beats, reference_unit = 4, 4
+            for bar in reference.findall('measure'):
+                time = bar.find('attributes/time')
+                if time is not None:
+                    reference_beats = sum(map(int, time.findtext('beats', str(reference_beats)).split('+')))
+                    reference_unit = int(time.findtext('beat-type', str(reference_unit)))
+                reference_meters.append((reference_beats, reference_unit))
+        for index in range(len(part.findall('measure')),count):
+            if index < len(reference_meters):
+                beats, unit = reference_meters[index]
             measure=ET.SubElement(part,'measure',number=str(len(part.findall('measure'))+1))
             words=ET.SubElement(ET.SubElement(ET.SubElement(measure,'direction'),'direction-type'),'words')
             words.text='認識欠落：原稿を確認してください'
@@ -584,6 +595,25 @@ def _merge_full_score_pages(records):
             # An explicitly marked, hidden placeholder preserves elapsed time.
             note=ET.SubElement(measure,'note',{'print-object':'no','id':f"recognition-gap-{part.get('id')}-{measure.get('number')}"})
             ET.SubElement(note,'rest',measure='yes');ET.SubElement(note,'duration').text=str(round(divisions*beats*4/unit));ET.SubElement(note,'type').text='whole'
+    def append_page(target, source, start, identifiers):
+        for offset, measure in enumerate(source.findall('measure'), 1):
+            copy = ET.fromstring(ET.tostring(measure))
+            copy.set('number', str(start + offset))
+            if offset == 1:
+                # Each input page is standalone MusicXML. Its implicit default
+                # division is 1, not the previous page's last division.
+                attrs = copy.find('attributes')
+                if attrs is None:
+                    attrs = ET.Element('attributes')
+                    copy.insert(0, attrs)
+                if attrs.find('divisions') is None:
+                    attrs.insert(0, ET.Element('divisions'))
+                    attrs[0].text = '1'
+            for instrument in copy.iter('instrument'):
+                if instrument.get('id') in identifiers:
+                    instrument.set('id', identifiers[instrument.get('id')])
+            target.append(copy)
+
     first_count=max((len(p.findall('measure')) for p in parts),default=0)
     for part in parts:pad(part,first_count)
     page_measures.append({'page':page_index(records[0][0],0),'start':0,'count':first_count})
@@ -593,18 +623,38 @@ def _merge_full_score_pages(records):
         for index,target in enumerate(parts):
             start=len(target.findall('measure'));source_index=alignment.get(index)
             if source_index is None:
-                pad(target,start+count);report.append({'pageIndex':page,'part':target.get('id'),'kind':'missing-part'});continue
+                pad(target,start+count, parts[0]);report.append({'pageIndex':page,'part':target.get('id'),'kind':'missing-part'});continue
             source=source_parts[source_index]
             old_meta=next(m for m in xml.find('part-list').findall('score-part') if m.get('id')==source.get('id'))
             new_meta=next(m for m in merged.find('part-list').findall('score-part') if m.get('id')==target.get('id'))
             identifiers={a.get('id'):b.get('id') for a,b in zip(old_meta.findall('score-instrument'),new_meta.findall('score-instrument'))}
-            for offset,measure in enumerate(source.findall('measure'),1):
-                copy=ET.fromstring(ET.tostring(measure));copy.set('number',str(start+offset))
-                for instrument in copy.iter('instrument'):
-                    if instrument.get('id') in identifiers:instrument.set('id',identifiers[instrument.get('id')])
-                target.append(copy)
+            append_page(target, source, start, identifiers)
             pad(target,start+count)
-        for index in set(range(len(source_parts)))-set(alignment.values()):report.append({'pageIndex':page,'sourcePart':source_parts[index].get('id'),'kind':'unassigned-part'})
+        # Keep unmatched source material in a provisional part. Adding it to
+        # a neighboring instrument would silently corrupt both instruments.
+        for index in sorted(set(range(len(source_parts)))-set(alignment.values())):
+            source = source_parts[index]
+            source_id = source.get('id')
+            old_meta = next(m for m in xml.find('part-list').findall('score-part') if m.get('id') == source_id)
+            new_id = f'review-P{page+1}-{index+1}'
+            new_meta = ET.fromstring(ET.tostring(old_meta))
+            new_meta.set('id', new_id)
+            new_meta.find('part-name').text = f'未割当て（原稿ページ要確認） {source_id}'
+            identifiers = {item.get('id'): f'{new_id}-I{i+1}'
+                           for i, item in enumerate(new_meta.findall('score-instrument'))}
+            for item in new_meta:
+                if item.tag in {'score-instrument', 'midi-instrument', 'midi-device'} and item.get('id') in identifiers:
+                    item.set('id', identifiers[item.get('id')])
+            merged.find('part-list').append(new_meta)
+            provisional = ET.SubElement(merged, 'part', id=new_id)
+            start = page_measures[-1]['start']
+            pad(provisional, start, parts[0])
+            append_page(provisional, source, start, identifiers)
+            pad(provisional, start + count, parts[0])
+            report.append({'pageIndex':page, 'part':new_id, 'sourcePart':source_id, 'kind':'unassigned-part'})
+    total = len(parts[0].findall('measure'))
+    for part in merged.findall('part'):
+        pad(part, total, parts[0])
     identification=merged.find('identification')
     if identification is None:
         identification=ET.Element('identification');before=next((i for i,el in enumerate(merged) if el.tag in {'defaults','credit','part-list','part'}),len(merged));merged.insert(before,identification)

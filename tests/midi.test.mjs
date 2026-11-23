@@ -30,3 +30,11 @@ test('replacing a timed port marker preserves note and end-of-track positions', 
   assert.deepEqual(track.filter(event => [144, 128].includes(event.status & 240)).map(event => event.tick), [0, 120])
   assert.equal(track.find(event => event.kind === 47).tick, 120)
 })
+
+test('the end marker follows a simultaneous final note event', () => {
+  const source = readMidi(midi(1))
+  source.tracks[0].push({tick: 120, status: 144, kind: null, data: [65, 64], order: 99})
+  const [track] = readMidi(separateMidiTracks(writeMidi(source))).tracks
+  assert.deepEqual(track.at(-2).data, [65, 64])
+  assert.equal(track.at(-1).kind, 47)
+})

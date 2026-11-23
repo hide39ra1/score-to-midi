@@ -38,6 +38,20 @@ class RecoveryTests(unittest.TestCase):
         ranges=json.loads(merged.find("identification/miscellaneous/miscellaneous-field[@name='page-measures-v1']").text)
         self.assertEqual(ranges,[{'page':0,'start':0,'count':1},{'page':1,'start':1,'count':1}])
 
+    def test_page_merge_keeps_late_parts_and_resets_implicit_divisions(self):
+        scope.update(ET=ET, re=re, json=json,
+                     np=SimpleNamespace(median=lambda values: sorted(values)[len(values)//2]))
+        first=ET.fromstring('<score-partwise><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>4</divisions></attributes><note id="n1-p0-80-100"><rest/><duration>16</duration></note></measure></part></score-partwise>')
+        second=ET.fromstring('<score-partwise><part-list><score-part id="P1"><part-name>Flute</part-name></score-part><score-part id="P2"><part-name>Oboe</part-name><score-instrument id="I1"><instrument-name>Oboe</instrument-name></score-instrument></score-part></part-list><part id="P1"><measure number="1"><note id="n1-p1-80-100"><rest/><duration>4</duration></note></measure></part><part id="P2"><measure number="1"><note id="n2-p1-80-200"><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><instrument id="I1"/></note></measure></part></score-partwise>')
+        geometry={'staves':[{'top':90,'bottom':110},{'top':190,'bottom':210}]}
+        merged=scope['_merge_full_score_pages']([(first,geometry),(second,geometry)])
+        flute, provisional = merged.findall('part')
+        self.assertEqual(flute.findall('measure')[1].findtext('attributes/divisions'),'1')
+        self.assertEqual(provisional.findall('measure')[0].find('note/rest').get('measure'),'yes')
+        note=provisional.findall('measure')[1].find('note')
+        self.assertEqual(note.findtext('pitch/step'),'G')
+        self.assertEqual(note.find('instrument').get('id'),merged.findall('part-list/score-part')[-1].find('score-instrument').get('id'))
+
     def test_boundary_only_phantom_measure_preserves_ending_and_repeat(self):
         scope.update(ET=ET)
         root=ET.fromstring('<score-partwise><part id="P1"><measure number="1"><note id="a"><rest/><duration>4</duration></note><barline location="right"><repeat direction="backward"/></barline></measure><measure number="2"><barline location="right"><ending type="stop" number="1"/></barline></measure><measure number="3"><note id="b"><rest/><duration>4</duration></note></measure></part></score-partwise>')

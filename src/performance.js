@@ -4,8 +4,8 @@ export function articulationPolicy({staccato=false,staccatissimo=false,accent=fa
 }
 export function readMidi(bytes) {
   const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.length),u32=at=>view.getUint32(at),text=at=>String.fromCharCode(...bytes.slice(at,at+4))
-  if(bytes.length<14||text(0)!=='MThd'||u32(4)<6)throw new Error('MIDIヘッダーが不正です')
-  const division=view.getUint16(12);if(division&0x8000)throw new Error('SMPTE形式のMIDIには対応していません')
+  if(bytes.length<14||text(0)!=='MThd'||u32(4)<6||u32(4)>bytes.length-8)throw new Error('MIDIヘッダーが不正です')
+  const division=view.getUint16(12);if(!division)throw new Error('MIDI分解能が不正です');if(division&0x8000)throw new Error('SMPTE形式のMIDIには対応していません')
   const tracks=[];let at=8+u32(4)
   while(at<bytes.length) {
     if(at+8>bytes.length||text(at)!=='MTrk')throw new Error('MIDIトラックが不正です')
@@ -25,6 +25,7 @@ export function readMidi(bytes) {
     }
     tracks.push(events);at=end
   }
+  if(tracks.length!==view.getUint16(10))throw new Error('MIDIトラック数が一致しません')
   return {header:bytes.slice(0,8+u32(4)),division,tracks}
 }
 const variable=value=>{const bytes=[value&127];while((value=Math.floor(value/128)))bytes.unshift((value&127)|128);return bytes}
@@ -32,7 +33,7 @@ export function writeMidi({header,tracks}) {
   const chunks=[header]
   for(const events of tracks) {
     const data=[];let tick=0
-    const priority=e=>(e.status&240)===128||((e.status&240)===144&&e.data[1]===0)?0:(e.status&240)===144?2:1
+    const priority=e=>e.status===255&&e.kind===47?3:(e.status&240)===128||((e.status&240)===144&&e.data[1]===0)?0:(e.status&240)===144?2:1
     for(const e of [...events].sort((a,b)=>a.tick-b.tick||priority(a)-priority(b)||a.order-b.order)) {data.push(...variable(e.tick-tick),e.status,...e.data);tick=e.tick}
     const head=new Uint8Array(8);head.set([77,84,114,107]);new DataView(head.buffer).setUint32(4,data.length);chunks.push(head,Uint8Array.from(data))
   }
