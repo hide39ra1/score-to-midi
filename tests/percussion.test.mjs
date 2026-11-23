@@ -2,7 +2,7 @@ import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {analyzeBinary,detectSingleLineStaves,mergeStaffDetections} from '../src/structure.js'
 import {detectMeasureRepeat,detectOneLineNotes} from '../src/percussion-image.js'
-import {percussionKind,drumPitch} from '../src/percussion.js'
+import {percussionKind,drumPitch,findDrumStaffs} from '../src/percussion.js'
 import {readMidi} from '../src/performance.js'
 import {separateMidiTracks} from '../src/midi.js'
 import create from 'verovio/wasm'
@@ -48,4 +48,16 @@ test('unpitched GM notes and channel 10 survive MIDI track separation',async()=>
   tk.loadData('<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Agogo</part-name><score-instrument id="I1"><instrument-name>High Agogo</instrument-name><instrument-sound>metal.bells.agogo</instrument-sound></score-instrument><midi-instrument id="I1"><midi-channel>10</midi-channel><midi-program>1</midi-program><midi-unpitched>68</midi-unpitched></midi-instrument></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>percussion</sign></clef></attributes><note><unpitched><display-step>E</display-step><display-octave>4</display-octave></unpitched><duration>1</duration><instrument id="I1"/><type>quarter</type></note></measure></part></score-partwise>')
   const bytes=separateMidiTracks(Uint8Array.from(Buffer.from(tk.renderToMIDI(),'base64'))),on=readMidi(bytes).tracks.flat().find(e=>(e.status&240)===144&&e.data[1]>0)
   assert.equal(on.status&15,9);assert.equal(on.data[0],67)
+})
+
+test('the drum label is assigned to its own physical staff, not neighboring Glockenspiel', () => {
+  const page = {structure: {staves: [
+    {id: 21, top: 100, bottom: 140, spacing: 10, left: 90},
+    {id: 22, top: 170, bottom: 210, spacing: 10, left: 90},
+  ]}}
+  assert.deepEqual([...findDrumStaffs(page, [
+    {str: 'Drums', x: 40, y: 130, w: 35, h: 15},
+    {str: 'Glockenspiel', x: 5, y: 200, w: 80, h: 15},
+    {str: 'Drum', x: 180, y: 190, w: 35, h: 15},
+  ])], [21])
 })

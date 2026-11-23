@@ -30,3 +30,34 @@ export function exportForMuseScore(source) {
   return new XMLSerializer().serializeToString(doc)
 }
 
+
+// Repair clef changes only on scanned, single-staff parts whose instrument
+// establishes the expected clef. Retain octave markings and all sounding pitches.
+const fixedClefs = Object.fromEntries([
+  ...['flute','piccolo','oboe','clarinet','bassclarinet','soprano','alto','tenor','baritone','trumpet','glockenspiel','violin'].map(id => [id, ['G', '2']]),
+  ['viola', ['C', '3']],
+].map(([id, clef]) => [MUSESCORE_INSTRUMENTS[id][1], clef]))
+
+export function normalizeRecognizedClefs(doc) {
+  const parts = new Map([...doc.querySelectorAll('score-partwise > part')].map(part => [part.id, part]))
+  let repaired = 0
+  for (const meta of doc.querySelectorAll('score-part')) {
+    const part = parts.get(meta.id)
+    const expected = fixedClefs[meta.querySelector('instrument-sound')?.textContent]
+    if (!expected || !part || Number(part.querySelector('staves')?.textContent || 1) !== 1) continue
+    for (const clef of part.querySelectorAll('attributes > clef')) {
+      const sign = clef.querySelector('sign')
+      const line = clef.querySelector('line')
+      if (!sign || (sign.textContent === expected[0] && line?.textContent === expected[1])) continue
+      sign.textContent = expected[0]
+      if (line) line.textContent = expected[1]
+      else {
+        const newLine = doc.createElement('line')
+        newLine.textContent = expected[1]
+        sign.after(newLine)
+      }
+      repaired++
+    }
+  }
+  return repaired
+}

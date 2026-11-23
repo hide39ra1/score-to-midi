@@ -13,9 +13,101 @@ export function percussionKind(text) {
   if(/sleigh|jingle|s\.?\s*bells|スレイ|鈴/i.test(text))return 'sleigh'
   if(/agogo|agogô|アゴゴ/i.test(text))return 'agogo'
   if(/tambourine|タンバリン/i.test(text))return 'tambourine'
-  if(/drums?|drs\.?|drum kit|ドラム/i.test(text))return 'drums'
+  if(/\b(?:drums?|drs)\b|ドラム/i.test(text))return 'drums'
   return null
 }
+export function findDrumStaffs(page, text) {
+  return new Set((page.structure?.staves || []).filter((staff, index, staves) => {
+    const top = index ? (staves[index - 1].bottom + staff.top) / 2 : staff.top - staff.spacing * 3
+    const bottom = staves[index + 1] ? (staff.bottom + staves[index + 1].top) / 2 : staff.bottom + staff.spacing * 3
+    return text.some(token => percussionKind(token.str) === 'drums' &&
+      (token.instrumentStaff ? token.instrumentStaff === staff.id :
+        token.x + token.w <= staff.left && token.y - token.h / 2 >= top && token.y - token.h / 2 < bottom))
+  }).map(staff => staff.id))
+}
+
+// Keep the MusicXML cursor intact when a note on the other staff is removed.
+function retainStaff(doc, part, number) {
+  for (const note of part.querySelectorAll('measure > note')) {
+    const staff = note.querySelector(':scope > staff')
+    if (Number(staff?.textContent || 1) === number) {
+      staff?.remove()
+    } else {
+      const duration = note.querySelector(':scope > duration')
+      if (duration && !note.querySelector('chord, grace')) {
+        const forward = el(doc, 'forward')
+        forward.append(duration.cloneNode(true))
+        note.replaceWith(forward)
+      } else note.remove()
+    }
+  }
+  part.querySelectorAll('attributes > staves, attributes > part-symbol').forEach(node => node.remove())
+  for (const node of part.querySelectorAll('attributes > [number]')) {
+    if (Number(node.getAttribute('number')) === number) node.removeAttribute('number')
+    else node.remove()
+  }
+  for (const event of part.querySelectorAll('measure > direction, measure > harmony, measure > forward')) {
+    const staff = event.querySelector(':scope > staff')
+    if (staff && Number(staff.textContent) !== number && event.tagName !== 'forward') event.remove()
+    else staff?.remove()
+  }
+}
+
+// OCR identifies the drum lane independently of the recognizer's grand-staff grouping.
+export function separateRecognizedDrums(doc, pages, labels) {
+  const drumStaffs = pages.map((page, index) => findDrumStaffs(page, labels[index] || []))
+  const drumParts = new Set()
+  for (const part of [...doc.querySelectorAll('score-partwise > part')]) {
+    const count = Number(part.querySelector('attributes > staves')?.textContent || 1)
+    const votes = new Map()
+    for (const note of part.querySelectorAll('note[id]')) {
+      const match = /-p(\d+)-(\d+)-(\d+)$/.exec(note.id)
+      if (!match || !drumStaffs[+match[1]]?.size) continue
+      const location = locateSymbol(pages[+match[1]].structure, +match[2], +match[3])
+      if (!location || location.ambiguous) continue
+      const number = Number(note.querySelector('staff')?.textContent || 1)
+      const vote = votes.get(number) || {hits: 0, total: 0}
+      vote.total++
+      if (drumStaffs[+match[1]].has(location.staff)) vote.hits++
+      votes.set(number, vote)
+    }
+    const matches = [...votes].filter(([, vote]) => vote.hits >= 2 && vote.hits / vote.total >= .75)
+    if (matches.length !== 1) continue
+    if (count === 1) {
+      drumParts.add(part.id)
+      continue
+    }
+    if (count !== 2) continue
+    const [[drumNumber]] = matches
+
+    const drum = part.cloneNode(true)
+    let id = part.id + '-drums'
+    while (doc.getElementById(id) || [...doc.querySelectorAll('part')].some(node => node.id === id)) id += '-1'
+    drum.id = id
+    retainStaff(doc, drum, drumNumber)
+    retainStaff(doc, part, 3 - drumNumber)
+    drum.querySelectorAll('note > instrument').forEach(node => node.remove())
+    const meta = [...doc.querySelectorAll('score-part')].find(node => node.id === part.id)
+    const drumMeta = el(doc, 'score-part', null, {id})
+    drumMeta.append(el(doc, 'part-name', 'Drum Kit'))
+    if (drumNumber === 1) {
+      meta.before(drumMeta)
+      part.before(drum)
+    } else {
+      meta.after(drumMeta)
+      part.after(drum)
+    }
+    drumParts.add(id)
+    // A fabricated second staff may contain only unpositioned filler rests.
+    if (!part.querySelector('note > pitch, note > unpitched') &&
+        ![...part.querySelectorAll('note[id]')].some(note => /-p\d+-\d+-\d+$/.test(note.id))) {
+      part.remove()
+      meta.remove()
+    }
+  }
+  return drumParts
+}
+
 export const drumPitch=step=>step<=2?36:step===3?45:step===4?47:step===5?38:step===6?50:step===7?51:step>=10?49:42
 const setupField=meta=>meta.querySelector('miscellaneous-field[name="percussion-setup"]')
 function setup(doc,meta,kind) {
@@ -95,7 +187,7 @@ function repeatMeasure(doc,part,index,record,report) {
   report.repeats.push({...record,part:part.id,index,notes:count});return true
 }
 
-export function applyPercussion(doc,pages,analyses,labels) {
+export function applyPercussion(doc,pages,analyses,labels,drumParts=new Set()) {
   const structures=pages.map(p=>p.structure),grid=rhythmGrid(doc,structures),report={lanes:[],repeats:[],warnings:[]}
   analyses.forEach((analysis,page)=>{if(analysis?.error)report.warnings.push(`${page+1}ページ: 打楽器解析に失敗しました（${analysis.error}）`)})
   const maxMeasures=Math.max(0,...[...doc.querySelectorAll('score-partwise > part')].map(p=>p.querySelectorAll(':scope > measure').length))
@@ -142,7 +234,7 @@ export function applyPercussion(doc,pages,analyses,labels) {
   // whole note or rest which happens to resemble the same image template.
   for(const part of doc.querySelectorAll('score-partwise > part')) {
     const meta=[...doc.querySelectorAll('score-part')].find(m=>m.id===part.id)
-    if(percussionKind(meta.querySelector('part-name')?.textContent||'')!=='drums')continue
+    if(!drumParts.has(part.id)&&percussionKind(meta.querySelector('part-name')?.textContent||'')!=='drums')continue
     setup(doc,meta,'drums')
     for(const note of part.querySelectorAll('note[id]')) {
       if(!note.querySelector('pitch'))continue

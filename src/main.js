@@ -10,9 +10,9 @@ import { separateMidiTracks } from './midi.js'
 import { sourceTitle, safeFileName, unknownTitle } from './title.js'
 import {storeGeometry,inspectGeometry} from './geometry-report.js'
 import {staffY,allStaves} from './structure.js'
-import {applyPercussion} from './percussion.js'
+import {applyPercussion,separateRecognizedDrums} from './percussion.js'
 import {normalizeTies,collectTiePairs,inspectTies,tieCandidates} from './ties.js'
-import {exportForMuseScore} from './musescore.js'
+import {exportForMuseScore,normalizeRecognizedClefs} from './musescore.js'
 import {MARKS,DYNAMICS,annotateDirections,inspectSymbols,listNoteSymbols,symbolReview,attributeContext,parseMeter,normalizeSymbolStructure,applyImageArticulations} from './symbols.js'
 
 const $ = (id) => document.getElementById(id)
@@ -211,14 +211,17 @@ async function open(xml, recognize = true) {
       progress(`楽器名を拡大して確認中… ${index+1}/${pages.length}`)
       try{return await ocrInstrumentLabels(page)}catch{return []}
     }))
-    namePartsFromText(score.doc, text.map((items,index)=>[...items,...labels[index]]))
+    const instrumentText = text.map((items, index) => [...items, ...labels[index]])
+    const drumParts = separateRecognizedDrums(score.doc, pages, instrumentText)
+    namePartsFromText(score.doc, instrumentText)
+    normalizeRecognizedClefs(score.doc)
     progress('打楽器の一線譜・小節反復を照合中…')
     const percussion=[]
     for(const [page,image] of pages.entries()) {
       try{percussion.push(await new Promise((resolve,reject)=>{const id=++geometryRequest;geometryRequests.set(id,{resolve,reject});geometryWorker.postMessage({id,operation:'percussion',png:image.png,structure:image.structure,page})}))}
       catch(error){percussion.push({lanes:[],repeats:[],error:error.message})}
     }
-    applyPercussion(score.doc,pages,percussion,text.map((items,index)=>[...items,...labels[index]]))
+    applyPercussion(score.doc, pages, percussion, instrumentText, drumParts)
     annotateDirections(score.doc,text)
     const result = annotate(score.doc, text)
     // Engine placeholders and author guesses are not a verified title.
@@ -383,7 +386,7 @@ async function draw() {
 
 function drawGeometry() {
   geometryReport=inspectGeometry(score.doc)
-  if(geometryReport.recognitionVersion!=='2026-11-23-bar-grid-5'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
+  if(geometryReport.recognitionVersion!=='2026-11-23-staff-identity-6'&&score.doc.querySelector('miscellaneous-field[name="staff-layout"],miscellaneous-field[name="image-structure-v1"]'))$('quality').textContent+=' 以前の認識処理の結果です。PDFを再認識すると画像補完・小節再試行・ページ結合の修正を適用できます。'
   if(geometryReport.pageAlignment.length)$('quality').textContent+=` ページ間のパート対応に${geometryReport.pageAlignment.length}件の欠落・未割当てがあります。空欄と原稿を確認してください。`
   if(geometryReport.warnings.length) $('quality').textContent+=` 五線・小節の構造照合で${geometryReport.warnings.length}件の確認候補があります。`
   const structures=geometryReport.structures
